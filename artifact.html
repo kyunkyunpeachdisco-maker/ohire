@@ -1,0 +1,2062 @@
+<!DOCTYPE html>
+<!--
+  Ohire（アーティファクト版）
+  - Claude.aiアーティファクトとして動かす単一HTML。GitHub Pages版（index.html）から移植。
+  - プラットフォーム依存処理はスクリプト冒頭の「アーティファクト用アダプタ」（store / aiComplete）に集約。
+  - データ保存: window.storage（個人ストレージ・非同期KV）。公開（publish）前のプレビューでは保存不可。
+  - AI呼び出し: window.claude.complete（文字列を渡し文字列が返る）。
+-->
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ohire</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Hiragino Kaku Gothic ProN', 'メイリオ', 'Yu Gothic', sans-serif;
+      background: #f5f5f5;
+      color: #333;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Header */
+    header {
+      background: white;
+      border-bottom: 1px solid #e8e8e8;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+
+    .header-left { display: flex; align-items: center; gap: 10px; }
+    header h1 { font-size: 15px; font-weight: 700; }
+
+    .header-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-left: 16px;
+    }
+
+    /* Menu panel (slide-in from right) */
+    #menu-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.3);
+      z-index: 200; display: none;
+    }
+    #menu-overlay.visible { display: block; }
+
+    #menu-panel {
+      position: fixed; top: 0; right: -300px;
+      width: 280px; max-width: 85vw; height: 100%;
+      background: white; z-index: 201;
+      box-shadow: -4px 0 24px rgba(0,0,0,0.12);
+      display: flex; flex-direction: column;
+      transition: right 0.25s ease;
+    }
+    #menu-panel.open { right: 0; }
+
+    .menu-panel-header {
+      padding: 14px 18px;
+      border-bottom: 1px solid #f0f0f0;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .menu-panel-header h2 { font-size: 15px; font-weight: 700; }
+    .menu-panel-close { background: none; border: none; font-size: 20px; cursor: pointer; color: #888; }
+
+    .menu-panel-body {
+      flex: 1; overflow-y: auto; padding: 8px 0;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .dropdown-item {
+      display: block;
+      width: 100%;
+      padding: 11px 16px;
+      background: none;
+      border: none;
+      text-align: left;
+      font-size: 14px;
+      font-family: inherit;
+      color: #333;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .dropdown-item:hover { background: #f5f5f5; }
+    .dropdown-item + .dropdown-item { border-top: 1px solid #f0f0f0; }
+    .dropdown-item.danger { color: #e74c3c; }
+
+    /* ハンバーガーメニュー内のselectラベル */
+    .menu-label {
+      padding: 8px 16px 2px;
+      font-size: 10px;
+      color: #aaa;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+    }
+    .menu-select {
+      display: block;
+      width: calc(100% - 32px);
+      margin: 0 16px 8px;
+      padding: 7px 8px;
+      border: 1px solid #e0e0e0;
+      border-radius: 7px;
+      font-size: 13px;
+      font-family: inherit;
+      background: white;
+      color: #333;
+    }
+    .menu-divider { border: none; border-top: 1px solid #f0f0f0; margin: 4px 0; }
+
+    .btn-sm {
+      background: none;
+      border: 1px solid #e0e0e0;
+      border-radius: 7px;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      color: #666;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+      font-family: inherit;
+    }
+
+    .btn-sm:hover { background: #f5f5f5; }
+    .btn-sm.active { border-color: #52c41a; color: #52c41a; }
+
+    /* Mobile tab bar */
+    .tab-bar {
+      display: none;
+      background: white;
+      border-bottom: 1px solid #e8e8e8;
+      flex-shrink: 0;
+    }
+
+    .tab-bar button {
+      flex: 1;
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      padding: 10px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #aaa;
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .tab-bar button.active { color: #1a1a1a; border-bottom-color: #1a1a1a; }
+
+    /* Main layout */
+    .main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* Editor pane */
+    .editor-pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: white;
+      overflow: hidden;
+      border-right: 1px solid #e8e8e8;
+    }
+
+    .editor-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 32px 40px 120px;
+    }
+
+    #title-input {
+      width: 100%;
+      font-size: 26px;
+      font-weight: 700;
+      border: none;
+      background: transparent;
+      outline: none;
+      color: #1a1a1a;
+      margin-bottom: 16px;
+      line-height: 1.35;
+      resize: none;
+      overflow: hidden;
+      font-family: inherit;
+    }
+
+    #title-input::placeholder { color: #d0d0d0; }
+
+    #editor {
+      width: 100%;
+      min-height: 400px;
+      font-size: 16px;
+      line-height: 1.85;
+      border: none;
+      background: transparent;
+      outline: none;
+      resize: none;
+      color: #333;
+      font-family: inherit;
+    }
+
+    #editor::placeholder { color: #ccc; }
+
+    /* Inline diff view */
+    #diff-view {
+      display: none;
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 40px 120px;
+      font-size: 16px;
+      line-height: 1.85;
+      font-family: inherit;
+      -webkit-overflow-scrolling: touch;
+    }
+    #diff-view.active { display: block; }
+
+    .diff-unchanged { white-space: pre-wrap; color: #333; font-family: inherit; }
+
+    .diff-changed-block {
+      margin: 6px 0;
+      border-radius: 6px;
+      overflow: hidden;
+      border: 1.5px solid #e0a020;
+    }
+    .diff-changed-block.accepted { border-color: #27ae60; }
+    .diff-changed-block.rejected { border-color: #ccc; }
+
+    .diff-block-actions {
+      display: flex;
+      gap: 6px;
+      padding: 5px 10px;
+      background: #fff9ed;
+      border-bottom: 1px solid #f0e0a0;
+    }
+    .btn-accept-block {
+      background: #1a1a1a; color: white;
+      border: none; border-radius: 5px;
+      padding: 3px 12px; font-size: 12px;
+      cursor: pointer; font-family: inherit; font-weight: 600;
+    }
+    .btn-reject-block {
+      background: white; color: #666;
+      border: 1px solid #ddd; border-radius: 5px;
+      padding: 3px 12px; font-size: 12px;
+      cursor: pointer; font-family: inherit;
+    }
+
+    .retry-draft-btn {
+      margin-top: 8px;
+      background: white; color: #555;
+      border: 1px solid #ddd; border-radius: 5px;
+      padding: 3px 12px; font-size: 12px;
+      cursor: pointer; font-family: inherit;
+      display: inline-block;
+    }
+
+    .diff-del-line {
+      display: block; white-space: pre-wrap; font-family: inherit;
+      background: #fff0f0; color: #c0392b;
+      text-decoration: line-through; padding: 1px 12px;
+    }
+    .diff-add-line {
+      display: block; white-space: pre-wrap; font-family: inherit;
+      background: #f0fff4; color: #1e8449; padding: 1px 12px;
+    }
+
+    /* 文字レベル差分: 共通部分は淡く、変更箇所(.cdh)を濃く */
+    .diff-del-line.cd { text-decoration: none; color: #b59a9a; }
+    .diff-add-line.cd { color: #8fa897; }
+    .diff-del-line .cdh { background: #ffd9d9; color: #c0392b; text-decoration: line-through; font-weight: 600; border-radius: 2px; }
+    .diff-add-line .cdh { background: #c9f0d4; color: #1e8449; font-weight: 600; border-radius: 2px; }
+    .diff-changed-block.accepted .diff-add-line .cdh,
+    .diff-changed-block.rejected .diff-del-line .cdh { background: none; color: inherit; font-weight: inherit; text-decoration: none; }
+
+    .diff-changed-block.accepted .diff-del-line { display: none; }
+    .diff-changed-block.accepted .diff-add-line { background: none; color: #333; }
+    .diff-changed-block.rejected .diff-add-line { display: none; }
+    .diff-changed-block.rejected .diff-del-line { text-decoration: none; background: none; color: #888; }
+
+    /* Diff controls footer */
+    #diff-controls {
+      display: none;
+      gap: 8px; padding: 10px 16px;
+      background: white; border-top: 1px solid #e8e8e8;
+      flex-shrink: 0; align-items: center; justify-content: space-between;
+    }
+    #diff-controls.active { display: flex; }
+    .diff-controls-info { font-size: 12px; color: #888; }
+    .diff-controls-btns { display: flex; gap: 6px; }
+
+    .btn-reject {
+      background: white; color: #666;
+      border: 1px solid #ddd; border-radius: 7px;
+      padding: 6px 14px; cursor: pointer;
+      font-size: 13px; font-family: inherit;
+    }
+    .btn-accept {
+      background: white; color: #1e8449;
+      border: 1px solid #b7e0c0; border-radius: 7px;
+      padding: 6px 14px; cursor: pointer;
+      font-size: 13px; font-family: inherit;
+    }
+
+    .btn-confirm {
+      background: #1a1a1a; color: white;
+      border: none; border-radius: 7px;
+      padding: 6px 16px; cursor: pointer;
+      font-size: 13px; font-weight: 600; font-family: inherit;
+    }
+
+    .diff-changed-block { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    .diff-changed-block.accepted { border-color: #52c41a; }
+    .diff-changed-block.rejected { border-color: #ccc; }
+
+    /* Pane divider (resizable) */
+    .pane-divider {
+      width: 5px;
+      flex-shrink: 0;
+      background: #e8e8e8;
+      cursor: col-resize;
+      transition: background 0.15s;
+      z-index: 10;
+      position: relative;
+    }
+    /* タッチ判定を両側に広げる（見た目は変えない） */
+    .pane-divider::after {
+      content: '';
+      position: absolute;
+      top: 0; bottom: 0;
+      left: -10px; right: -10px;
+    }
+    .pane-divider:hover, .pane-divider.dragging { background: #aaa; }
+
+    /* Chat pane */
+    .chat-pane {
+      flex: 0 0 340px;
+      min-width: 150px;
+      display: flex;
+      flex-direction: column;
+      background: #fafafa;
+      overflow: hidden;
+    }
+
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .chat-empty {
+      text-align: center;
+      color: #bbb;
+      font-size: 13px;
+      margin: auto;
+      padding: 20px;
+      line-height: 1.8;
+    }
+
+    .chat-empty .examples {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 12px;
+    }
+
+    textarea.menu-select {
+      resize: vertical;
+      min-height: 64px;
+      font-family: inherit;
+      line-height: 1.5;
+    }
+
+    .example-chip {
+      background: white;
+      border: 1px solid #e8e8e8;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 12px;
+      color: #666;
+      cursor: pointer;
+      text-align: left;
+      transition: all 0.15s;
+      font-family: inherit;
+    }
+
+    .example-chip:hover { border-color: #ccc; background: #f9f9f9; }
+
+    /* Message bubbles */
+    .msg { display: flex; flex-direction: column; gap: 3px; }
+
+    .msg-user { align-items: flex-end; }
+    .msg-ai   { align-items: flex-start; }
+
+    .bubble {
+      max-width: 88%;
+      padding: 9px 13px;
+      border-radius: 14px;
+      font-size: 13px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .bubble-user { background: #1a1a1a; color: white; border-bottom-right-radius: 4px; }
+    .bubble-ai   { background: white; color: #333; border: 1px solid #e8e8e8; border-bottom-left-radius: 4px; }
+
+    .msg-meta { font-size: 10px; color: #bbb; padding: 0 4px; }
+
+    /* Typing indicator */
+    .typing-dots { display: flex; gap: 4px; align-items: center; padding: 4px 0; }
+    .typing-dots span {
+      width: 6px; height: 6px;
+      background: #bbb;
+      border-radius: 50%;
+      animation: bounce 1.2s infinite;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-6px)} }
+
+    /* Chat input */
+    .chat-input-area {
+      border-top: 1px solid #e8e8e8;
+      background: white;
+      padding: 10px 12px;
+      flex-shrink: 0;
+    }
+
+    .chat-input-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      background: #f5f5f5;
+      border-radius: 12px;
+      padding: 8px 10px;
+    }
+
+    #chat-input {
+      flex: 1;
+      border: none;
+      background: transparent;
+      outline: none;
+      font-size: 14px;
+      color: #333;
+      font-family: inherit;
+      resize: none;
+      min-height: 24px;
+      max-height: 120px;
+      line-height: 1.5;
+    }
+
+    #chat-input::placeholder { color: #bbb; }
+
+    #chat-send {
+      background: #1a1a1a;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      width: 30px;
+      height: 30px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    #chat-send:disabled { background: #ccc; cursor: not-allowed; }
+
+    /* Image attachment */
+    #image-preview-area {
+      display: none;
+      padding: 8px 10px 0;
+    }
+    #image-preview-area.visible { display: flex; align-items: flex-start; gap: 8px; }
+
+    #image-preview-wrap {
+      position: relative;
+      display: inline-flex;
+    }
+    #image-preview-wrap img {
+      max-height: 80px;
+      max-width: 120px;
+      border-radius: 8px;
+      object-fit: cover;
+      border: 1px solid #e0e0e0;
+    }
+    #image-remove {
+      position: absolute;
+      top: -6px; right: -6px;
+      width: 18px; height: 18px;
+      background: #666;
+      color: white;
+      border: none;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 10px;
+      display: flex; align-items: center; justify-content: center;
+      line-height: 1;
+    }
+
+    #image-attach {
+      background: none;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      width: 30px;
+      height: 30px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      flex-shrink: 0;
+      color: #888;
+    }
+    #image-attach:hover { border-color: #ccc; background: #f5f5f5; }
+    #image-attach.has-image { border-color: #52c41a; color: #52c41a; }
+
+    #draft-gen { opacity: 0.35; transition: opacity 0.15s; }
+    #draft-gen.on { opacity: 1; border-color: #1a1a1a; background: #f0f0f0; }
+    #preview-btn.on { border-color: #1a1a1a; background: #f0f0f0; }
+
+    #preview-view {
+      display: none;
+      flex: 1;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 32px 40px 120px;
+      background: white;
+      line-height: 1.9;
+      font-size: 16px;
+      color: #222;
+    }
+    #preview-view h2 { font-size: 20px; margin: 28px 0 12px; }
+    #preview-view h3 { font-size: 17px; margin: 22px 0 10px; }
+    #preview-view p { margin: 0 0 14px; }
+    #preview-view .pv-title { font-size: 24px; margin: 0 0 24px; font-weight: 700; }
+
+    .bubble-img {
+      max-width: 100%;
+      max-height: 200px;
+      border-radius: 10px;
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .chat-hint {
+      font-size: 10px;
+      color: #ccc;
+      text-align: center;
+      margin-top: 6px;
+    }
+
+    /* Spinner */
+    .spinner {
+      width: 12px; height: 12px;
+      border: 2px solid rgba(255,255,255,0.4);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Save indicator */
+    #save-indicator {
+      font-size: 10px;
+      color: #ccc;
+      padding: 0 16px 8px;
+      flex-shrink: 0;
+    }
+
+    /* Drafts drawer */
+    #drafts-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.3);
+      z-index: 400; display: none;
+    }
+    #drafts-overlay.visible { display: block; }
+
+    #drafts-panel {
+      position: fixed; top: 0; right: -360px;
+      width: 340px; max-width: 90vw; height: 100%;
+      background: white; z-index: 401;
+      box-shadow: -4px 0 24px rgba(0,0,0,0.12);
+      display: flex; flex-direction: column;
+      transition: right 0.25s ease;
+    }
+    #drafts-panel.open { right: 0; }
+
+    .drafts-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid #f0f0f0;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .drafts-header h2 { font-size: 16px; font-weight: 700; }
+    .drafts-close { background: none; border: none; font-size: 20px; cursor: pointer; color: #888; }
+
+    .drafts-search {
+      padding: 8px 16px;
+      border-bottom: 1px solid #f0f0f0;
+      flex-shrink: 0;
+    }
+    .drafts-search input {
+      width: 100%;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 13px;
+      font-family: inherit;
+      outline: none;
+      background: #f9f9f9;
+    }
+    .drafts-search input:focus { border-color: #aaa; background: white; }
+
+    .drafts-body { flex: 1; overflow-y: auto; padding: 12px; }
+
+    .draft-item {
+      border: 1px solid #eee; border-radius: 10px;
+      padding: 12px 14px; margin-bottom: 8px;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .draft-item:hover { border-color: #ccc; }
+    .draft-item.current { border-color: #1a1a1a; }
+
+    .draft-title { font-size: 14px; font-weight: 600; margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .draft-preview { font-size: 12px; color: #888; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; margin-bottom: 8px; }
+    .draft-meta { font-size: 11px; color: #bbb; display: flex; justify-content: space-between; align-items: center; }
+
+    .draft-btns { display: flex; gap: 4px; }
+    .draft-btn { background: none; border: 1px solid #e8e8e8; border-radius: 5px; padding: 3px 8px; font-size: 11px; cursor: pointer; color: #666; font-family: inherit; }
+    .draft-btn.del { color: #e74c3c; border-color: #fce; }
+
+    .drafts-footer { display: flex; gap: 8px; margin: 12px; }
+    .drafts-new { flex: 1; padding: 10px; background: #1a1a1a; color: white; border: none; border-radius: 10px; cursor: pointer; font-size: 14px; font-weight: 600; font-family: inherit; }
+    .drafts-branch { flex: 1; padding: 10px; background: white; color: #1a1a1a; border: 1.5px solid #1a1a1a; border-radius: 10px; cursor: pointer; font-size: 14px; font-weight: 600; font-family: inherit; }
+
+    .drafts-empty { text-align: center; color: #bbb; padding: 40px 20px; font-size: 13px; }
+
+    /* API key modal */
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.4);
+      z-index: 600; display: flex;
+      align-items: center; justify-content: center;
+      padding: 20px; backdrop-filter: blur(4px);
+    }
+    .modal { background: white; border-radius: 20px; padding: 28px; width: 100%; max-width: 400px; }
+    .modal h2 { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+    .modal p { font-size: 13px; color: #888; margin-bottom: 20px; line-height: 1.6; }
+    .modal input { width: 100%; border: 1.5px solid #e0e0e0; border-radius: 10px; padding: 12px 14px; font-size: 14px; outline: none; margin-bottom: 14px; font-family: monospace; }
+    .modal input:focus { border-color: #1a1a1a; }
+    .modal-btn { width: 100%; background: #1a1a1a; color: white; border: none; border-radius: 10px; padding: 13px; font-size: 15px; cursor: pointer; font-weight: 600; font-family: inherit; }
+
+    /* Toast */
+    #toast {
+      position: fixed; bottom: 24px; left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      background: #1a1a1a; color: white;
+      padding: 10px 20px; border-radius: 20px;
+      font-size: 13px; opacity: 0; transition: all 0.3s;
+      pointer-events: none; z-index: 500; white-space: nowrap;
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    /* AI selects */
+    .ai-select {
+      border: 1px solid #e0e0e0;
+      border-radius: 7px;
+      padding: 6px 8px;
+      font-size: 12px;
+      color: #666;
+      background: white;
+      cursor: pointer;
+      font-family: inherit;
+      outline: none;
+    }
+    .ai-select:hover { border-color: #ccc; }
+
+    /* Pane label (mobile only) */
+    .pane-label { display: none; }
+
+    /* エディタ更新バッジ */
+    .editor-badge {
+      display: inline-block;
+      background: #1a1a1a;
+      color: white;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 10px;
+      margin-left: 6px;
+      animation: badgePop 0.2s ease;
+    }
+    @keyframes badgePop { from { transform: scale(0.7); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+    /* Desktop: editor fills available vertical space */
+    @media (min-width: 681px) {
+      #editor { min-height: calc(100dvh - 280px); }
+    }
+
+    /* Mobile layout */
+    @media (max-width: 680px) {
+      /* タブバー不要（上下分割のため） */
+      .tab-bar { display: none; }
+
+      .pane-label {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 5px 12px;
+        background: #f0f0f0;
+        border-bottom: 1px solid #e8e8e8;
+        font-size: 12px;
+        font-weight: 600;
+        color: #888;
+        flex-shrink: 0;
+        cursor: pointer;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      /* 最小化時 (!important でインラインstyleを上書き) */
+      .editor-pane.collapsed { flex: 0 0 auto !important; }
+      .editor-pane.collapsed .editor-scroll,
+      .editor-pane.collapsed #save-indicator,
+      .editor-pane.collapsed #diff-bar,
+      .editor-pane.collapsed #diff-view,
+      .editor-pane.collapsed #diff-controls { display: none; }
+
+      .chat-pane.collapsed { flex: 0 0 auto !important; }
+      .chat-pane.collapsed .chat-messages { display: none; }
+
+      /* 縦分割: エディタ上・チャット下 */
+      .main { flex-direction: column; }
+      .editor-pane,
+      .editor-pane.hidden {
+        position: static;
+        display: flex;
+        flex: 3;
+        min-height: 60px;
+        border-right: none;
+        border-bottom: 1px solid #e8e8e8;
+      }
+      .chat-pane,
+      .chat-pane.hidden {
+        position: static;
+        display: flex;
+        width: 100%;
+        flex: 2;
+        min-height: 60px;
+      }
+
+      /* モバイル用 divider */
+      .pane-divider {
+        width: 100%;
+        height: 5px;
+        cursor: row-resize;
+      }
+      .pane-divider::after {
+        left: 0; right: 0;
+        top: -10px; bottom: -10px;
+      }
+
+      .editor-scroll { padding: 16px 16px 16px; }
+      #preview-view { padding: 16px 16px 90px; }
+      #title-input { font-size: 22px; }
+      .btn-sm span { display: none; }
+      /* iOSズーム防止: input/textareaは16px以上必須 */
+      input, textarea, select { font-size: 16px !important; }
+
+      /* iOS standalone モード対策: position:fixed で overflow:hidden の外に出す */
+      .chat-input-area {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: 50;
+        padding-bottom: calc(10px + env(safe-area-inset-bottom));
+      }
+      .chat-messages { padding-bottom: 90px; }
+
+      #chat-input {
+        -webkit-user-select: text;
+        user-select: text;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="header-left">
+    <h1>Ohire</h1>
+  </div>
+  <div class="header-actions">
+    <button class="btn-sm" onclick="copyAll()" title="本文をコピー">📋</button>
+    <button id="draft-gen" class="btn-sm" onclick="toggleDraftGen()" title="下書き自動生成">✍️</button>
+    <button id="preview-btn" class="btn-sm" onclick="togglePreview()" title="プレビュー">👁</button>
+
+    <!-- ハンバーガーメニュー -->
+    <button class="btn-sm" onclick="toggleMenu()" title="メニュー">☰</button>
+  </div>
+</header>
+
+<!-- Mobile tab bar -->
+<div class="tab-bar" id="tab-bar">
+  <button id="tab-editor" class="active" onclick="switchTab('editor')">✏️ エディタ</button>
+  <button id="tab-chat" onclick="switchTab('chat')">✦ AI チャット</button>
+</div>
+
+<div class="main" id="main">
+
+  <!-- Editor pane -->
+  <div class="editor-pane" id="editor-pane">
+    <div class="pane-label" onclick="togglePane('editor')">
+      <span>✏️ エディタ</span>
+      <span id="editor-toggle-icon">▲</span>
+    </div>
+    <div class="editor-scroll">
+      <textarea id="title-input" placeholder="タイトル" rows="1"
+        oninput="autoResize(this); scheduleAutoSave()"></textarea>
+      <textarea id="editor" placeholder="本文を書き始めてください..."
+        oninput="autoResize(this); scheduleAutoSave()"
+        onblur="selStart=this.selectionStart; selEnd=this.selectionEnd;"></textarea>
+    </div>
+    <!-- Markdown preview -->
+    <div id="preview-view"></div>
+    <!-- Inline diff view -->
+    <div id="diff-view"></div>
+    <!-- Diff controls -->
+    <div id="diff-controls">
+      <span class="diff-controls-info" id="diff-controls-info"></span>
+      <div class="diff-controls-btns">
+        <button class="btn-reject" onclick="rejectAllBlocks()">✗ 破棄</button>
+        <button class="btn-confirm" onclick="finalizeDiff()">✓ 確定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Resizable divider -->
+  <div class="pane-divider" id="pane-divider"></div>
+
+  <!-- Chat pane -->
+  <div class="chat-pane" id="chat-pane">
+    <div class="pane-label" onclick="togglePane('chat')">
+      <span>✦ AI チャット</span>
+      <span id="chat-toggle-icon">▼</span>
+    </div>
+    <div class="chat-messages" id="chat-messages">
+      <div class="chat-empty" id="chat-empty">
+        <div>AIと壁打ちしながら記事を育てよう</div>
+        <div class="examples">
+          <button class="example-chip" onclick="useExample(this)">今日考えていたことを話すから、記事にまとめてほしい</button>
+          <button class="example-chip" onclick="useExample(this)">この話、面白いと思う？どう膨らませる？</button>
+          <button class="example-chip" onclick="useExample(this)">もっとカジュアルな文体にして</button>
+          <button class="example-chip" onclick="useExample(this)">読者に刺さる導入に書き直して</button>
+          <button class="example-chip" onclick="useExample(this)">結論をもっと強く打ち出して</button>
+        </div>
+      </div>
+    </div>
+    <div class="chat-input-area">
+      <div class="chat-input-row">
+        <textarea
+          id="chat-input"
+          placeholder="メッセージを入力…"
+          rows="1"
+          oninput="autoResize(this)"
+        ></textarea>
+        <button id="chat-send" onclick="sendChat()">↑</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Menu panel -->
+<div id="menu-overlay" onclick="closeMenu()"></div>
+<div id="menu-panel">
+  <div class="menu-panel-header">
+    <h2>メニュー</h2>
+    <button class="menu-panel-close" onclick="closeMenu()">✕</button>
+  </div>
+  <div class="menu-panel-body">
+    <button class="dropdown-item" onclick="openDrafts(); closeMenu()" id="drafts-btn">📄 下書き一覧</button>
+    <hr class="menu-divider">
+    <button class="dropdown-item" onclick="proposeDraftUpdate(); closeMenu()">↺ リライト（会話全体から）</button>
+    <button class="dropdown-item" onclick="restoreSnapshot(); closeMenu()">↩ 適用前に戻す</button>
+    <hr class="menu-divider">
+    <div class="menu-label">文体・トーン</div>
+    <select id="tone-select" class="menu-select" onchange="saveToneSetting()">
+      <option value="">指定なし</option>
+      <option value="casual">カジュアル（話し言葉）</option>
+      <option value="essay">エッセイ調</option>
+      <option value="formal">フォーマル（論説調）</option>
+      <option value="note">note向け</option>
+      <option value="blog">ブログ向け</option>
+      <option value="business">ビジネス文書</option>
+    </select>
+    <div class="menu-label">執筆方針メモ（ライターAIが常に守る）</div>
+    <textarea id="style-memo" class="menu-select" rows="3" placeholder="例：常体で書く／読者は非エンジニア／絵文字は使わない" onchange="saveStyleMemo()"></textarea>
+    <hr class="menu-divider">
+    <button class="dropdown-item" onclick="copyChatMd(); closeMenu()">📋 チャットを記事用コピー（MD）</button>
+    <hr class="menu-divider">
+    <button class="dropdown-item danger" onclick="clearChat(); closeMenu()">🗑 チャット履歴を削除</button>
+  </div>
+</div>
+
+<!-- Drafts drawer -->
+<div id="drafts-overlay" onclick="closeDrafts()"></div>
+<div id="drafts-panel">
+  <div class="drafts-header">
+    <h2>下書き一覧</h2>
+    <button class="drafts-close" onclick="closeDrafts()">✕</button>
+  </div>
+  <div class="drafts-search">
+    <input type="text" id="drafts-search-input" placeholder="検索…" oninput="renderDraftsList(this.value)">
+  </div>
+  <div class="drafts-body" id="drafts-list"></div>
+  <div class="drafts-footer">
+    <button class="drafts-new" onclick="newDraft()">＋ 新規</button>
+    <button class="drafts-branch" onclick="branchDraft()">⑂ ブランチ</button>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+// ==================== アーティファクト用アダプタ ====================
+// プラットフォーム依存の呼び出しはこの2つに集約してある。
+// window.storage / window.claude.complete の仕様が違う場合はここだけ直せばよい。
+
+// window.storage（非同期KV）をlocalStorage風の同期APIで使うラッパー。
+// 起動時に全キーをメモリへ読み込み、書き込みは非同期で流す（write-through）。
+// 注意: 公開（publish）前のプレビューではstorageが使えないため、その間はメモリのみで動く。
+const memStore = {};
+const store = {
+  getItem(key) { return key in memStore ? memStore[key] : null; },
+  setItem(key, value) {
+    memStore[key] = String(value);
+    window.storage?.set(key, String(value)).catch(() => {});
+  },
+  removeItem(key) {
+    delete memStore[key];
+    window.storage?.delete(key).catch(() => {});
+  },
+  async loadAll() {
+    try {
+      const listed = await window.storage.list();
+      const keys = (listed || []).map(k => typeof k === 'string' ? k : k.key);
+      for (const key of keys) {
+        const v = await window.storage.get(key);
+        if (v == null) continue;
+        memStore[key] = typeof v === 'string' ? v : (v.value ?? JSON.stringify(v));
+      }
+    } catch { /* 未公開プレビュー等でstorage不可の場合はメモリのみで動作 */ }
+  }
+};
+
+// AI呼び出し（文字列→文字列）
+async function aiComplete(prompt) {
+  const res = await window.claude.complete(prompt);
+  return (typeof res === 'string' ? res : (res?.text ?? '')).trim();
+}
+
+// 会話モード用システムプロンプト（話し相手AIは純粋な議論相手。下書き生成は別のAIコールが担当）
+const CHAT_SYSTEM_PROMPT = `あなたはユーザーの議論相手です。テーマについて一緒に考え、意見を述べ、問いを投げ返してください。
+
+あなたは記事を書きません。執筆・文体・構成は別のライターAIが担当しており、あなたの仕事は議論だけです。
+
+ルール:
+- 執筆に関する質問・提案（「どんなスタイルで書きますか？」「構成はどうしましょう？」など）は一切しない
+- 「どんな記事を書きたいですか？」「目的は？」「方向性は？」のような確認質問は禁止。ユーザーが話し始めたら、そのまま議論に入る
+- 事実関係や詳細の確認（「それは〇〇のこと？」など）は積極的にしてよい
+- 自分の意見・反論・別の視点を遠慮なく出す。同意するだけの相槌は不要
+- 話の矛盾や面白い点があれば突っ込む
+- 返答は簡潔に（1〜3文）`;
+
+// ==================== State ====================
+let selStart = 0, selEnd = 0;
+let proposedText = '';
+let currentDraftId = null; // 起動時にstoreから復元
+let draftGenOn = false;
+// 議論メモ（古い会話のコンパクション結果）。upToはchatLogのうち畳み込み済みの件数
+let chatMemo = { text: '', upTo: 0 };
+let compacting = false;
+
+function toggleDraftGen() {
+  draftGenOn = !draftGenOn;
+  document.getElementById('draft-gen').classList.toggle('on', draftGenOn);
+  store.setItem('note_draft_gen', draftGenOn ? '1' : '');
+}
+
+// チャット履歴（{role, text, time, mode}の配列。mode: 'chat'=会話 / 'edit'=編集 / 'system'=UI通知）
+let chatLog = [];
+
+// ==================== Init ====================
+document.addEventListener('DOMContentLoaded', async () => {
+  // アーティファクトのストレージからメモリへ全データを読み込んでから復元処理に入る
+  await store.loadAll();
+  currentDraftId = store.getItem('note_current_draft_id') || null;
+
+  // トーン設定を復元
+  const savedTone = store.getItem('note_tone') || '';
+  document.getElementById('tone-select').value = savedTone;
+
+  // 下書きを復元
+  if (currentDraftId) {
+    const draft = getDrafts().find(d => d.id === currentDraftId);
+    if (draft) {
+      document.getElementById('title-input').value = draft.title === '（無題）' ? '' : draft.title;
+      document.getElementById('editor').value = draft.body;
+    }
+  }
+
+  // チャット履歴を復元
+  const savedLog = store.getItem('note_chat_log_' + (currentDraftId || 'default'));
+  if (savedLog) {
+    try {
+      chatLog = JSON.parse(savedLog);
+      chatLog.forEach(m => restoreChatMessage(m));
+      if (chatLog.length > 0) document.getElementById('chat-empty')?.remove();
+    } catch {}
+  }
+
+  loadChatMemo(currentDraftId);
+  document.getElementById('style-memo').value = store.getItem('note_style_memo') || '';
+  draftGenOn = !!store.getItem('note_draft_gen');
+  document.getElementById('draft-gen').classList.toggle('on', draftGenOn);
+
+  autoResize(document.getElementById('title-input'));
+  autoResize(document.getElementById('editor'));
+  autoResize(document.getElementById('chat-input'));
+  setIndicator('保存済み');
+  restorePaneRatio();
+
+  // iOS: キーボード表示時に position:fixed の chat-input-area が埋もれる問題を visualViewport で対処
+  if (window.visualViewport && isMobile()) {
+    const chatInputArea = document.querySelector('.chat-input-area');
+    function onViewportChange() {
+      const vv = window.visualViewport;
+      const offset = window.innerHeight - vv.offsetTop - vv.height;
+      if (offset > 10) {
+        // キーボード表示中: layout viewport の底から押し上げる
+        chatInputArea.style.bottom = offset + 'px';
+        const msgs = document.getElementById('chat-messages');
+        msgs.scrollTop = msgs.scrollHeight;
+      } else {
+        // キーボード非表示: CSS 側の bottom に戻す
+        chatInputArea.style.bottom = '';
+      }
+    }
+    window.visualViewport.addEventListener('resize', onViewportChange);
+    window.visualViewport.addEventListener('scroll', onViewportChange);
+  }
+});
+
+// ==================== Pane resizer ====================
+function isMobile() { return window.innerWidth <= 680; }
+
+function applyPaneRatio(ratio) {
+  const editorPane = document.getElementById('editor-pane');
+  const chatPane   = document.getElementById('chat-pane');
+  if (editorPane.classList.contains('collapsed') || chatPane.classList.contains('collapsed')) return;
+  ratio = Math.max(0.12, Math.min(0.88, ratio));
+  store.setItem(isMobile() ? 'pane_ratio_mobile' : 'pane_ratio_desktop', ratio);
+  if (isMobile()) {
+    editorPane.style.flex = `0 0 ${ratio * 100}%`;
+    chatPane.style.flex   = `0 0 ${(1 - ratio) * 100}%`;
+  } else {
+    editorPane.style.flex = '1 1 0';
+    chatPane.style.flex   = `0 0 ${(1 - ratio) * 100}%`;
+  }
+}
+
+function restorePaneRatio() {
+  const saved = parseFloat(store.getItem(isMobile() ? 'pane_ratio_mobile' : 'pane_ratio_desktop'));
+  if (!isNaN(saved)) applyPaneRatio(saved);
+}
+
+function clearPaneInlineFlex() {
+  document.getElementById('editor-pane').style.flex = '';
+  document.getElementById('chat-pane').style.flex   = '';
+}
+
+(function() {
+  const divider = document.getElementById('pane-divider');
+  let dragging = false, startPos = 0, startEditorSize = 0, startChatSize = 0;
+
+  divider.addEventListener('pointerdown', e => {
+    if (e.button && e.button !== 0) return;
+    dragging = true;
+    divider.setPointerCapture(e.pointerId);
+    divider.classList.add('dragging');
+    const mobile = isMobile();
+    startPos = mobile ? e.clientY : e.clientX;
+    const ep = document.getElementById('editor-pane');
+    const cp = document.getElementById('chat-pane');
+    startEditorSize = mobile ? ep.offsetHeight : ep.offsetWidth;
+    startChatSize   = mobile ? cp.offsetHeight : cp.offsetWidth;
+    e.preventDefault();
+  });
+
+  divider.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const mobile = isMobile();
+    const delta = (mobile ? e.clientY : e.clientX) - startPos;
+    const newEditor = Math.max(60, startEditorSize + delta);
+    const newChat   = Math.max(60, startChatSize   - delta);
+    applyPaneRatio(newEditor / (newEditor + newChat));
+  });
+
+  const stopDrag = () => { dragging = false; divider.classList.remove('dragging'); };
+  divider.addEventListener('pointerup', stopDrag);
+  divider.addEventListener('pointercancel', stopDrag);
+
+  window.addEventListener('resize', restorePaneRatio);
+})();
+
+// ==================== Pane toggle (mobile) ====================
+function togglePane(pane) {
+  if (window.innerWidth > 680) return;
+
+  const el    = document.getElementById(pane + '-pane');
+  const other = document.getElementById((pane === 'editor' ? 'chat' : 'editor') + '-pane');
+  const isCollapsing = !el.classList.contains('collapsed');
+
+  // インラインflexをクリアしてからCSSクラスに制御を渡す
+  el.style.flex    = '';
+  other.style.flex = '';
+  el.classList.toggle('collapsed');
+
+  if (pane === 'chat') {
+    document.querySelector('.chat-input-area').style.display = isCollapsing ? 'none' : '';
+    document.getElementById('chat-toggle-icon').textContent = isCollapsing ? '▶' : '▼';
+  } else {
+    document.getElementById('editor-toggle-icon').textContent = isCollapsing ? '▶' : '▲';
+  }
+
+  // 展開時かつ両ペイン可視の場合、保存済み比率を復元
+  if (!isCollapsing && !other.classList.contains('collapsed')) {
+    restorePaneRatio();
+  }
+}
+
+// ==================== Mobile tabs ====================
+function switchTab(tab) {
+  const editorPane = document.getElementById('editor-pane');
+  const chatPane   = document.getElementById('chat-pane');
+  document.getElementById('tab-editor').classList.toggle('active', tab === 'editor');
+  document.getElementById('tab-chat').classList.toggle('active',   tab === 'chat');
+  editorPane.classList.toggle('hidden', tab !== 'editor');
+  chatPane.classList.toggle('hidden',   tab !== 'chat');
+  // 表示後にtextareaの高さを再計算（非表示中はscrollHeight=0になるため）
+  if (tab === 'chat') autoResize(document.getElementById('chat-input'));
+}
+
+// ==================== Chat ====================
+function useExample(btn) {
+  const input = document.getElementById('chat-input');
+  input.value = btn.textContent;
+  autoResize(input);
+  input.focus();
+}
+
+document.getElementById('chat-input').addEventListener('keydown', e => {
+  // Enter = 改行、Ctrl+Enter = 送信（スマホ・PC共通）
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) {
+    e.preventDefault();
+    sendChat();
+  }
+});
+
+function draftContextForChat() {
+  // 議論AIに渡す下書きの現状。長文時は構成＋直近部分に絞ってコンテキストを節約する
+  const body = document.getElementById('editor').value.trim();
+  if (!body) return '';
+  if (body.length <= 3000) return body;
+  const headings = body.split('\n').filter(l => /^#{2,3} /.test(l)).join('\n');
+  return `（下書きが長いため構成と直近部分のみ）
+構成:
+${headings || '（見出しなし）'}
+
+末尾1500字:
+${body.slice(-1500)}`;
+}
+
+function saveStyleMemo() {
+  store.setItem('note_style_memo', document.getElementById('style-memo').value);
+}
+
+function getStyleMemo() {
+  return (store.getItem('note_style_memo') || '').trim();
+}
+
+function saveChatMemo() {
+  store.setItem('note_chat_memo_' + (currentDraftId || 'default'), JSON.stringify(chatMemo));
+}
+
+function loadChatMemo(id) {
+  chatMemo = { text: '', upTo: 0 };
+  try {
+    const raw = store.getItem('note_chat_memo_' + (id || 'default'));
+    if (raw) {
+      const p = JSON.parse(raw);
+      if (p && typeof p.text === 'string') chatMemo = { text: p.text, upTo: p.upTo || 0 };
+    }
+  } catch {}
+}
+
+// 未圧縮の会話が溜まったら、古い分を議論メモに畳み込む（Claude Codeのコンパクション相当）
+async function maybeCompactChat() {
+  if (compacting) return;
+  const pending = chatLog.slice(chatMemo.upTo).filter(m => (m.mode ?? 'chat') === 'chat');
+  const pendingChars = pending.reduce((n, m) => n + m.text.length, 0);
+  if (pendingChars < 8000) return;
+  // 直近2往復は生のまま残し、それより前をメモへ
+  const keep = 4;
+  if (pending.length <= keep) return;
+  const newUpTo = chatLog.indexOf(pending[pending.length - keep]);
+  const toFold = chatLog.slice(chatMemo.upTo, newUpTo).filter(m => (m.mode ?? 'chat') === 'chat');
+  if (!toFold.length) return;
+  const lines = toFold.map(m => `${m.role === 'ai' ? 'AI' : 'ユーザー'}: ${m.text}`).join('\n');
+  const prompt = `あなたは議論の記録係です。「既存メモ」に「新しいやり取り」の内容を統合し、更新後のメモ全文のみを返してください。
+
+形式（この見出し構成を維持）:
+## テーマと現在の方向性
+## 決定事項（理由つき）
+## ボツにした案と理由
+## 未解決の論点
+
+簡潔に。ただし後から議論を再開できる程度の具体性は残すこと。
+
+既存メモ:
+${chatMemo.text || '（まだなし）'}
+
+新しいやり取り:
+${lines}`;
+  compacting = true;
+  try {
+    const memoText = await aiComplete(prompt);
+    if (memoText) {
+      chatMemo = { text: memoText, upTo: newUpTo };
+      saveChatMemo();
+    }
+  } catch {
+    // 失敗しても次のターンで再試行される
+  } finally {
+    compacting = false;
+  }
+}
+
+function saveChatLog() {
+  const key = 'note_chat_log_' + (currentDraftId || 'default');
+  store.setItem(key, JSON.stringify(chatLog));
+}
+
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const instruction = input.value.trim();
+  if (!instruction) return;
+
+  const editor = document.getElementById('editor');
+  // selStart/selEnd はエディタblur時に保存済みの値を使う（チャット欄タップで選択解除される問題の回避）
+  const hasSelection = selStart !== selEnd;
+  const savedSelStart = selStart, savedSelEnd = selEnd;
+  selStart = 0; selEnd = 0; // 送信後リセット
+
+  const targetText = hasSelection
+    ? editor.value.substring(savedSelStart, savedSelEnd)
+    : editor.value;
+  const isEditMode = hasSelection; // 選択テキストがある時のみ編集モード（選択なし=会話モード）
+
+  input.value = '';
+  autoResize(input);
+
+  document.getElementById('chat-empty')?.remove();
+
+  const btn = document.getElementById('chat-send');
+  btn.innerHTML = '<span class="spinner"></span>';
+  btn.disabled = true;
+
+  addMessage('user', instruction, null, isEditMode ? 'edit' : 'chat');
+  const typingId = addTyping();
+
+  // 会話履歴を構築（会話モードのやり取りのみ・直近8000字。送信済みの今回分は除外）
+  const pastLog = chatLog.slice(0, -1).filter(m => (m.mode ?? 'chat') === 'chat');
+  const historyLog = [];
+  let histTotal = 0;
+  for (let i = pastLog.length - 1; i >= 0; i--) {
+    histTotal += pastLog[i].text.length;
+    if (histTotal > 8000) break;
+    historyLog.unshift(pastLog[i]);
+  }
+  const historyText = historyLog
+    .map(m => `${m.role === 'ai' ? 'あなた' : 'ユーザー'}: ${m.text}`)
+    .join('\n');
+
+  const fullPrompt = isEditMode
+    ? `以下のテキストを指示に従って編集してください。必ず下記のJSON形式のみで返してください（前置き・説明不要）。
+{"reply":"会話としての返答（なぜそう編集したか、別案など、1〜3文）","edit":"編集後のテキスト全文"}
+表を作る場合はMarkdownの表ではなく、note用KaTeX形式（$$\\begin{array}{l|l} \\text{見出し} & \\text{見出し} \\\\ \\hline \\text{セル} & \\text{セル} \\end{array}$$、日本語セルは\\text{}で包む）を使うこと。
+
+指示: ${instruction}
+${getStyleMemo() ? `\n執筆方針（常に守る）:\n${getStyleMemo()}\n` : ''}
+テキスト:
+${targetText}`
+    : `${CHAT_SYSTEM_PROMPT}
+
+参考情報として、議論を元に育っている下書きの現状を渡す。ユーザーが「あの段落」「さっきの結論」のように下書きに言及したら噛み合わせること。内容への意見はよいが、文面の執筆・修正の提案はしない。
+
+これまでの議論の要約メモ（古い会話分）:
+${chatMemo.text || '（なし）'}
+
+下書きの現状:
+${draftContextForChat() || '（まだ下書きなし）'}
+
+これまでの会話:
+${historyText || '（まだ会話なし）'}
+
+ユーザーの新しい発言: ${instruction}
+
+返答のみを出力してください。`;
+
+  try {
+    const resultText = await aiComplete(fullPrompt);
+
+    removeTyping(typingId);
+
+    if (isEditMode) {
+      // 編集モード: JSON解析してreplyはチャット・editはdiffへ
+      const parsed = parseEditResponse(resultText);
+      if (parsed.reply) addMessage('ai', parsed.reply, null, 'edit');
+      if (parsed.edit) showInlineDiff(targetText, parsed.edit, hasSelection, savedSelStart, savedSelEnd);
+    } else {
+      // 会話モード: チャット返答 + 自動生成ONなら毎ターン、あるべき像を生成して本文へ直接反映
+      addMessage('ai', resultText);
+      if (draftGenOn) proposeDraftUpdate();
+      maybeCompactChat(); // 未圧縮分が溜まっていたら裏で議論メモを更新
+    }
+
+  } catch (err) {
+    removeTyping(typingId);
+    addMessage('ai', 'エラー: ' + err.message, null, 'system');
+  } finally {
+    btn.innerHTML = '↑';
+    btn.disabled = false;
+  }
+}
+
+// ==================== Chat UI helpers ====================
+function addMessage(role, text, imgDataUrl = null, mode = 'chat') {
+  const time = new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+  // 画像はdataUrl（長大）はログに保存しない
+  chatLog.push({ role, text, time, hasImg: !!imgDataUrl, mode });
+  saveChatLog();
+  renderChatMessage(role, text, time, imgDataUrl);
+}
+
+function renderChatMessage(role, text, time, imgDataUrl = null) {
+  const messages = document.getElementById('chat-messages');
+  const isUser = role === 'user' || role === 'user-img';
+  const div = document.createElement('div');
+  div.className = `msg msg-${isUser ? 'user' : 'ai'}`;
+  const imgHtml = imgDataUrl ? `<img class="bubble-img" src="${imgDataUrl}" alt="添付画像" />` : '';
+  div.innerHTML = `
+    <div class="bubble bubble-${isUser ? 'user' : 'ai'}">${imgHtml}${esc(text)}</div>
+  `;
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+// 起動時の履歴復元用（ログへの追記なし）
+function restoreChatMessage(m) {
+  renderChatMessage(m.role, m.text, m.time);
+}
+
+function addTyping() {
+  const messages = document.getElementById('chat-messages');
+  const id = 'typing_' + Date.now();
+  const div = document.createElement('div');
+  div.className = 'msg msg-ai';
+  div.id = id;
+  div.innerHTML = `<div class="bubble bubble-ai"><div class="typing-dots"><span></span><span></span><span></span></div></div>`;
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+  return id;
+}
+
+function removeTyping(id) {
+  document.getElementById(id)?.remove();
+}
+
+// ==================== Markdown preview ====================
+let previewOn = false;
+
+// H2/H3/太字のみの軽量レンダラ（ライターAIの許可記法と同じ範囲）
+function renderMarkdown(md) {
+  const inline = s => esc(s).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  return md.split('\n').map(line => {
+    if (/^###\s+/.test(line)) return `<h3>${inline(line.replace(/^###\s+/, ''))}</h3>`;
+    if (/^##\s+/.test(line)) return `<h2>${inline(line.replace(/^##\s+/, ''))}</h2>`;
+    if (!line.trim()) return '';
+    return `<p>${inline(line)}</p>`;
+  }).join('');
+}
+
+function togglePreview() {
+  if (!previewOn && diffBlocks.length > 0) { showToast('diffレビュー中はプレビューを開けません'); return; }
+  previewOn = !previewOn;
+  const pv = document.getElementById('preview-view');
+  if (previewOn) {
+    const title = document.getElementById('title-input').value.trim();
+    pv.innerHTML = (title ? `<div class="pv-title">${esc(title)}</div>` : '')
+      + renderMarkdown(document.getElementById('editor').value);
+    document.querySelector('.editor-scroll').style.display = 'none';
+    pv.style.display = 'block';
+  } else {
+    pv.style.display = 'none';
+    document.querySelector('.editor-scroll').style.display = '';
+  }
+  document.getElementById('preview-btn').classList.toggle('on', previewOn);
+}
+
+// ==================== Inline Diff ====================
+let diffBlocks = [];
+let diffSel = { start: 0, end: 0, isSelection: false };
+
+function lcsLines(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] + 1 : Math.max(dp[i-1][j], dp[i][j-1]);
+  const r = []; let i = m, j = n;
+  while (i > 0 && j > 0) {
+    if (a[i-1] === b[j-1]) { r.unshift(a[i-1]); i--; j--; }
+    else if (dp[i-1][j] >= dp[i][j-1]) i--;
+    else j--;
+  }
+  return r;
+}
+
+// 変更ブロック内の文字レベル差分。共通の前後を削ってから文字LCSを取り、
+// del側/add側それぞれのHTML（変更箇所を.cdhで強調）を返す。大きすぎる場合はnull（従来表示）
+function charDiffParts(oldText, newText) {
+  if (!oldText || !newText) return null;
+  let p = 0;
+  const minLen = Math.min(oldText.length, newText.length);
+  while (p < minLen && oldText[p] === newText[p]) p++;
+  let suf = 0;
+  while (suf < minLen - p && oldText[oldText.length - 1 - suf] === newText[newText.length - 1 - suf]) suf++;
+  const oldMid = oldText.slice(p, oldText.length - suf);
+  const newMid = newText.slice(p, newText.length - suf);
+  if (oldMid.length * newMid.length > 300000) return null;
+  const m = oldMid.length, n = newMid.length;
+  const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = oldMid[i - 1] === newMid[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
+  const ops = [];
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && oldMid[i - 1] === newMid[j - 1]) { ops.push(['=', oldMid[i - 1]]); i--; j--; }
+    else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) { ops.push(['+', newMid[j - 1]]); j--; }
+    else { ops.push(['-', oldMid[i - 1]]); i--; }
+  }
+  ops.reverse();
+  const head = esc(oldText.slice(0, p));
+  const tail = esc(suf ? oldText.slice(oldText.length - suf) : '');
+  let delHtml = head, addHtml = head;
+  let buf = '', mode = '';
+  const flush = () => {
+    if (!buf) return;
+    const e = esc(buf);
+    if (mode === '=') { delHtml += e; addHtml += e; }
+    else if (mode === '-') delHtml += `<span class="cdh">${e}</span>`;
+    else addHtml += `<span class="cdh">${e}</span>`;
+    buf = '';
+  };
+  for (const [t, ch] of ops) {
+    if (t !== mode) { flush(); mode = t; }
+    buf += ch;
+  }
+  flush();
+  delHtml += tail; addHtml += tail;
+  return { delHtml, addHtml };
+}
+
+function buildDiffBlocks(oldText, newText) {
+  const ol = oldText.split('\n'), nl = newText.split('\n');
+  const lcs = lcsLines(ol, nl);
+  const blocks = [];
+  let i = 0, j = 0, k = 0;
+  let unchanged = [], changed = null;
+
+  function flushUnchanged() {
+    if (unchanged.length) { blocks.push({ type: 'unchanged', lines: [...unchanged] }); unchanged = []; }
+  }
+  function flushChanged() {
+    if (changed) { blocks.push({ ...changed }); changed = null; }
+  }
+
+  while (i < ol.length || j < nl.length) {
+    if (k < lcs.length && i < ol.length && ol[i] === lcs[k] && j < nl.length && nl[j] === lcs[k]) {
+      flushChanged(); unchanged.push(ol[i]); i++; j++; k++;
+    } else {
+      flushUnchanged();
+      if (!changed) changed = { type: 'changed', oldLines: [], newLines: [], accepted: null };
+      if (j < nl.length && (k >= lcs.length || nl[j] !== lcs[k])) { changed.newLines.push(nl[j]); j++; }
+      else { changed.oldLines.push(ol[i]); i++; }
+    }
+  }
+  flushChanged(); flushUnchanged();
+
+  let id = 0;
+  for (const b of blocks) if (b.type === 'changed') b.id = id++;
+  return blocks;
+}
+
+function showInlineDiff(oldText, newText, isSelection = false, sStart = 0, sEnd = 0) {
+  diffBlocks = buildDiffBlocks(oldText, newText);
+  diffSel = { start: sStart, end: sEnd, isSelection };
+
+  const changedCount = diffBlocks.filter(b => b.type === 'changed').length;
+  if (changedCount === 0) { addMessage('ai', '変更はありません', null, 'system'); return; }
+
+  if (previewOn) togglePreview(); // プレビュー中ならdiffを優先して閉じる
+  document.querySelector('.editor-scroll').style.display = 'none';
+  document.getElementById('diff-view').classList.add('active');
+  document.getElementById('diff-controls').classList.add('active');
+  renderDiffView();
+  updateDiffInfo();
+}
+
+function renderDiffView() {
+  document.getElementById('diff-view').innerHTML = diffBlocks.map(b => {
+    if (b.type === 'unchanged') return `<div class="diff-unchanged">${esc(b.lines.join('\n'))}</div>`;
+    const cls = b.accepted === true ? 'accepted' : b.accepted === false ? 'rejected' : '';
+    const cd = (b.oldLines.length && b.newLines.length)
+      ? charDiffParts(b.oldLines.join('\n'), b.newLines.join('\n'))
+      : null;
+    const dels = cd
+      ? `<span class="diff-del-line cd">${cd.delHtml}</span>`
+      : b.oldLines.map(l => `<span class="diff-del-line">${esc(l)}</span>`).join('');
+    const adds = cd
+      ? `<span class="diff-add-line cd">${cd.addHtml}</span>`
+      : b.newLines.map(l => `<span class="diff-add-line">${esc(l)}</span>`).join('');
+    return `<div class="diff-changed-block ${cls}" id="diff-block-${b.id}" onclick="toggleBlock(${b.id})">${dels}${adds}</div>`;
+  }).join('');
+}
+
+// ブロックタップで却下（もう一度タップで取り消し）。何もしなければ確定時・次ターン時に反映される
+function toggleBlock(id) {
+  const b = diffBlocks.find(x => x.type === 'changed' && x.id === id);
+  if (!b) return;
+  b.accepted = b.accepted === false ? null : false;
+  document.getElementById(`diff-block-${id}`).className =
+    'diff-changed-block' + (b.accepted === false ? ' rejected' : '');
+  updateDiffInfo();
+}
+
+function rejectAllBlocks() {
+  // 提案を丸ごと破棄して閉じる
+  closeDiffView();
+  showToast('提案を破棄しました');
+}
+
+function updateDiffInfo() {
+  const total = diffBlocks.filter(b => b.type === 'changed').length;
+  const rej = diffBlocks.filter(b => b.type === 'changed' && b.accepted === false).length;
+  document.getElementById('diff-controls-info').textContent =
+    rej > 0 ? `確定で${total - rej}件反映（${rej}件却下）` : `確定で${total}件反映`;
+}
+
+// diff適用で本文が変わる直前の状態を世代保存（最大10件）
+function pushSnapshot() {
+  const body = document.getElementById('editor').value;
+  const key = 'note_snapshots_' + (currentDraftId || 'default');
+  let snaps = [];
+  try { snaps = JSON.parse(store.getItem(key) || '[]'); } catch {}
+  snaps.push({ body, at: Date.now() });
+  if (snaps.length > 10) snaps = snaps.slice(-10);
+  store.setItem(key, JSON.stringify(snaps));
+}
+
+function restoreSnapshot() {
+  if (previewOn) togglePreview();
+  const key = 'note_snapshots_' + (currentDraftId || 'default');
+  let snaps = [];
+  try { snaps = JSON.parse(store.getItem(key) || '[]'); } catch {}
+  if (!snaps.length) { showToast('戻せる適用履歴がありません'); return; }
+  if (diffBlocks.length > 0) closeDiffView(); // 表示中の提案は破棄
+  const snap = snaps.pop();
+  store.setItem(key, JSON.stringify(snaps));
+  document.getElementById('editor').value = snap.body;
+  scheduleAutoSave();
+  showToast('↩ 適用前の状態に戻しました');
+}
+
+function finalizeDiff() {
+  const lines = [];
+  for (const b of diffBlocks) {
+    if (b.type === 'unchanged') lines.push(...b.lines);
+    else lines.push(...(b.accepted === false ? b.oldLines : b.newLines));
+  }
+  const finalText = lines.join('\n');
+  const ed = document.getElementById('editor');
+  const newValue = diffSel.isSelection
+    ? ed.value.substring(0, diffSel.start) + finalText + ed.value.substring(diffSel.end)
+    : finalText;
+  if (newValue !== ed.value) pushSnapshot();
+  ed.value = newValue;
+  scheduleAutoSave();
+  closeDiffView();
+  showToast('✓ 変更を適用しました');
+}
+
+function closeDiffView() {
+  diffBlocks = [];
+  document.getElementById('diff-view').classList.remove('active');
+  document.getElementById('diff-controls').classList.remove('active');
+  document.querySelector('.editor-scroll').style.display = '';
+}
+
+function resolveOpenDiff() {
+  // 表示中のdiffを、却下ブロック以外すべて反映して閉じる（放置＝承認）
+  if (!diffBlocks.length) return;
+  const lines = [];
+  for (const b of diffBlocks) {
+    if (b.type === 'unchanged') lines.push(...b.lines);
+    else lines.push(...(b.accepted === false ? b.oldLines : b.newLines));
+  }
+  const ed = document.getElementById('editor');
+  const newValue = diffSel.isSelection
+    ? ed.value.substring(0, diffSel.start) + lines.join('\n') + ed.value.substring(diffSel.end)
+    : lines.join('\n');
+  if (newValue !== ed.value) {
+    pushSnapshot();
+    ed.value = newValue;
+    scheduleAutoSave();
+  }
+  closeDiffView();
+}
+
+// ==================== Draft auto-proposal ====================
+async function proposeDraftUpdate(_retry = false) {
+  const currentDraft = document.getElementById('editor').value.trim();
+
+  // メモに畳み込み済みより後の、会話モードのやり取りを素材にする（それ以前は議論メモが担う）
+  const chatModeLog = chatLog.slice(chatMemo.upTo).filter(m => (m.mode ?? 'chat') === 'chat');
+  const limit = 30000; // コンテキスト暴走防止の上限。超えた分は古い方から切る
+  let total = 0;
+  const collected = [];
+  for (let i = chatModeLog.length - 1; i >= 0; i--) {
+    const line = `${chatModeLog[i].role === 'user' ? 'ユーザー' : 'AI'}: ${chatModeLog[i].text}`;
+    total += line.length;
+    if (total > limit) break;
+    collected.unshift(chatModeLog[i]);
+  }
+  const recentChat = collected.map(m =>
+    `${m.role === 'user' ? 'ユーザー' : 'AI'}: ${m.text}`
+  ).join('\n');
+
+  const toneInst = getToneInstruction();
+  const styleMemo = getStyleMemo();
+  const toneLine = (toneInst ? `\n文体指定: ${toneInst}` : '')
+    + (styleMemo ? `\n執筆方針（必ず守る）:\n${styleMemo}` : '');
+
+  const prompt = currentDraft
+    ? `あなたは記事ライターです。以下はユーザーとAIの壁打ち（議論）の記録です。現時点の議論を過不足なく反映した記事を書いてください。
+
+- 記事の分量と完成度は議論の蓄積量に比例させる。会話で語られていないことを想像で補完・水増ししない。議論が浅いうちは短い記事や骨子で構わない
+- 単にユーザーの発言を書き起こすのではなく、議論から生まれた考え・洞察・結論を読み物として自然な文章に昇華させる
+- 現在の下書きは過去の生成結果にユーザーが手を入れたものです。会話と矛盾しない言い回し・表現はできるだけ残す
+- ただし下書きへの微調整に留めないこと。構成・内容は会話全体から導いたあるべき形を優先し、議論が進んで構成が古くなっていれば恐れず組み替える
+- 会話に新しい内容がなく、下書きが既にあるべき形と一致している場合のみ「NO_CHANGE」とだけ返す
+
+※H1(#)は使用不可。見出しはH2(##)とH3(###)のみ使用すること。太字(**)は使用可。
+※表はMarkdownの表（|区切り）ではなく、noteで描画されるKaTeX形式で書くこと:
+$$\\begin{array}{l|l} \\text{見出し} & \\text{見出し} \\\\ \\hline \\text{セル} & \\text{セル} \\end{array}$$
+（日本語セルは必ず\\text{}で包む。列数は3列程度までに抑える）${toneLine}
+
+これまでの議論メモ（古い会話の要約）:
+${chatMemo.text || '（なし）'}
+
+直近の会話:
+${recentChat}
+
+現在の下書き:
+${currentDraft}
+
+あるべき記事の全文のみを返してください。`
+    : `あなたは記事ライターです。以下はユーザーとAIの壁打ち（議論）の記録です。現時点の議論を過不足なく反映した下書きを書いてください。
+単にユーザーの発言を書き起こすのではなく、議論から生まれた考え・洞察・結論を、読み物として自然な文章に昇華させてください。
+分量は議論の蓄積量に比例させること。会話で語られていないことを想像で補完・水増ししない。議論がまだ浅ければ数段落の短い下書きや骨子で構わない（議論が深まるたびに記事は育っていく）。
+※H1(#)は使用不可。見出しはH2(##)とH3(###)のみ使用すること。太字(**)は使用可。タイトル行(#)は書かず本文のみ返すこと。
+※表はMarkdownの表（|区切り）ではなく、noteで描画されるKaTeX形式で書くこと:
+$$\\begin{array}{l|l} \\text{見出し} & \\text{見出し} \\\\ \\hline \\text{セル} & \\text{セル} \\end{array}$$
+（日本語セルは必ず\\text{}で包む。列数は3列程度までに抑える）${toneLine}
+
+これまでの議論メモ（古い会話の要約）:
+${chatMemo.text || '（なし）'}
+
+直近の会話:
+${recentChat}
+
+本文のみを返してください（タイトルは含めない）。`;
+
+  // チャットにはtypingを出さない（バックグラウンド処理）
+  try {
+    const resultText = await aiComplete(prompt);
+    const noChange = /^[「"'\s]*NO_CHANGE[」"'\s]*$/.test(resultText);
+    if (resultText && !noChange && resultText !== currentDraft) {
+      // 選択編集のdiffをレビュー中なら、この自動提案は捨てる（次のターンで再生成される）
+      if (diffBlocks.length > 0 && diffSel.isSelection) return;
+      // 前の提案diffが残っていれば「却下ブロック以外をすべて反映」して閉じる（放置＝承認）
+      resolveOpenDiff();
+      const baseText = document.getElementById('editor').value.trim();
+      if (resultText === baseText) return;
+      showInlineDiff(baseText, resultText);
+      showEditorBadge(baseText ? '更新案あり' : '下書き生成');
+    }
+  } catch (e) {
+    if (!_retry) {
+      await new Promise(r => setTimeout(r, 2000));
+      proposeDraftUpdate(true);
+    } else {
+      addDraftErrorMessage(e.message);
+    }
+  }
+}
+
+function addDraftErrorMessage(errMsg) {
+  const messages = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  div.className = 'msg msg-ai draft-error-msg';
+  div.innerHTML = `<div class="bubble bubble-ai">下書き生成エラー: ${esc(errMsg)}<br><button class="retry-draft-btn" onclick="this.closest('.draft-error-msg').remove(); proposeDraftUpdate()">↺ 再実行</button></div>`;
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function showEditorBadge(label) {
+  // PC: エディタペインのヘッダーがないのでトースト
+  // Mobile: pane-label 内にバッジ表示
+  const paneLabel = document.querySelector('.editor-pane .pane-label span:first-child');
+  if (paneLabel) {
+    document.querySelector('.editor-badge')?.remove();
+    const badge = document.createElement('span');
+    badge.className = 'editor-badge';
+    badge.textContent = label;
+    paneLabel.appendChild(badge);
+    setTimeout(() => badge.remove(), 5000);
+  } else {
+    showToast('✏️ ' + label);
+  }
+}
+
+function parseEditResponse(text) {
+  // ```json ... ``` や前後のゴミを除去してJSONを取り出す
+  const m = text.match(/\{[\s\S]*?"reply"[\s\S]*?"edit"[\s\S]*?\}/) ||
+            text.match(/\{[\s\S]*?"edit"[\s\S]*?"reply"[\s\S]*?\}/);
+  if (m) {
+    try { return JSON.parse(m[0]); } catch {}
+  }
+  // フォールバック: 全文をeditとして扱う
+  return { reply: null, edit: text };
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ==================== Draft storage ====================
+function getDrafts() {
+  try { return JSON.parse(store.getItem('note_drafts') || '[]'); }
+  catch { return []; }
+}
+
+function saveDraftsToStorage(drafts) {
+  store.setItem('note_drafts', JSON.stringify(drafts));
+  renderDraftsList();
+}
+
+let autoSaveTimer;
+function scheduleAutoSave() {
+  clearTimeout(autoSaveTimer);
+  setIndicator('...');
+  autoSaveTimer = setTimeout(() => { autoSaveCurrentDraft(); setIndicator('保存済み'); }, 800);
+}
+
+function autoSaveCurrentDraft() {
+  const title = document.getElementById('title-input').value;
+  const body  = document.getElementById('editor').value;
+  if (!title.trim() && !body.trim()) return;
+
+  const drafts = getDrafts();
+  const now = Date.now();
+
+  if (currentDraftId) {
+    const idx = drafts.findIndex(d => d.id === currentDraftId);
+    if (idx >= 0) {
+      drafts[idx] = { ...drafts[idx], title: title || '（無題）', body, updated: now };
+      saveDraftsToStorage(drafts);
+      return;
+    }
+  }
+
+  const nd = { id: 'draft_' + now, title: title || '（無題）', body, created: now, updated: now };
+  currentDraftId = nd.id;
+  store.setItem('note_current_draft_id', currentDraftId);
+  drafts.unshift(nd);
+  saveDraftsToStorage(drafts);
+}
+
+function saveDraft() { autoSaveCurrentDraft(); showToast('💾 保存しました'); }
+
+// ==================== Dropdown ====================
+function toggleMenu() {
+  const panel = document.getElementById('menu-panel');
+  const overlay = document.getElementById('menu-overlay');
+  if (panel.classList.contains('open')) {
+    closeMenu();
+  } else {
+    panel.classList.add('open');
+    overlay.classList.add('visible');
+  }
+}
+function closeMenu() {
+  document.getElementById('menu-panel').classList.remove('open');
+  document.getElementById('menu-overlay').classList.remove('visible');
+}
+
+function saveToneSetting() {
+  store.setItem('note_tone', document.getElementById('tone-select').value);
+}
+
+function getToneInstruction() {
+  const tone = document.getElementById('tone-select').value;
+  const map = {
+    casual: 'カジュアルな話し言葉で書いてください。',
+    essay: 'エッセイ調で、個人の思考や感情が伝わるように書いてください。',
+    formal: 'フォーマルな論説調で、論理的に構成してください。',
+    note: 'note記事向けの文体で、読みやすく親しみやすいトーンで書いてください。',
+    blog: 'ブログ向けの文体で、読者に語りかけるように書いてください。',
+    business: 'ビジネス文書として、簡潔かつ正確に書いてください。',
+  };
+  return map[tone] || '';
+}
+
+function setIndicator(msg) {
+  const el = document.getElementById('save-indicator');
+  if (el) el.textContent = msg;
+}
+
+function loadDraft(id) {
+  const draft = getDrafts().find(d => d.id === id);
+  if (!draft) return;
+  saveChatLog(); // 切り替え前の履歴を保存
+  saveChatMemo();
+  currentDraftId = id;
+  store.setItem('note_current_draft_id', id);
+  document.getElementById('title-input').value = draft.title === '（無題）' ? '' : draft.title;
+  document.getElementById('editor').value = draft.body;
+  autoResize(document.getElementById('title-input'));
+  // チャット履歴をこの下書き用に切り替え
+  clearChatUI();
+  const savedLog = store.getItem('note_chat_log_' + id);
+  if (savedLog) {
+    try {
+      chatLog = JSON.parse(savedLog);
+      chatLog.forEach(m => restoreChatMessage(m));
+      if (chatLog.length > 0) document.getElementById('chat-empty')?.remove();
+    } catch {}
+  }
+  loadChatMemo(id);
+  closeDrafts();
+  showToast('📄 読み込みました');
+}
+
+function deleteDraft(id, e) {
+  e.stopPropagation();
+  if (!confirm('この下書きを削除しますか？')) return;
+  const drafts = getDrafts().filter(d => d.id !== id);
+  saveDraftsToStorage(drafts);
+  store.removeItem('note_chat_log_' + id);
+  store.removeItem('note_chat_memo_' + id);
+  store.removeItem('note_snapshots_' + id);
+  if (currentDraftId === id) {
+    currentDraftId = null;
+    store.removeItem('note_current_draft_id');
+    document.getElementById('title-input').value = '';
+    document.getElementById('editor').value = '';
+    autoResize(document.getElementById('title-input'));
+  }
+  showToast('削除しました');
+}
+
+function clearChat() {
+  if (!confirm('チャット履歴を削除しますか？')) return;
+  store.removeItem('note_chat_log_' + (currentDraftId || 'default'));
+  store.removeItem('note_chat_memo_' + (currentDraftId || 'default'));
+  chatMemo = { text: '', upTo: 0 };
+  clearChatUI();
+  showToast('チャット履歴を削除しました');
+}
+
+function clearChatUI() {
+  chatLog = [];
+  const messages = document.getElementById('chat-messages');
+  messages.innerHTML = `<div class="chat-empty" id="chat-empty">
+    <div>AIと壁打ちしながら記事を育てよう</div>
+    <div class="examples">
+      <button class="example-chip" onclick="useExample(this)">今日考えていたことを話すから、記事にまとめてほしい</button>
+      <button class="example-chip" onclick="useExample(this)">この話、面白いと思う？どう膨らませる？</button>
+      <button class="example-chip" onclick="useExample(this)">もっとカジュアルな文体にして</button>
+      <button class="example-chip" onclick="useExample(this)">読者に刺さる導入に書き直して</button>
+      <button class="example-chip" onclick="useExample(this)">結論をもっと強く打ち出して</button>
+    </div>
+  </div>`;
+}
+
+function newDraft() {
+  currentDraftId = null;
+  store.removeItem('note_current_draft_id');
+  document.getElementById('title-input').value = '';
+  document.getElementById('editor').value = '';
+  autoResize(document.getElementById('title-input'));
+  clearChatUI(); // 新規下書き = チャットもリセット
+  chatMemo = { text: '', upTo: 0 };
+  closeDrafts();
+  document.getElementById('editor').focus();
+}
+
+function branchDraft() {
+  // チャット履歴を引き継いで新規下書きを作成
+  const inheritedLog = [...chatLog];
+  currentDraftId = null;
+  store.removeItem('note_current_draft_id');
+  document.getElementById('title-input').value = '';
+  document.getElementById('editor').value = '';
+  autoResize(document.getElementById('title-input'));
+  // チャットはそのまま引き継ぎ（chatLogは変えない）
+  closeDrafts();
+  document.getElementById('editor').focus();
+  showToast('⑂ チャットを引き継いで新規下書きを作成しました');
+}
+
+function renderDraftsList(query) {
+  const q = (query || '').trim().toLowerCase();
+  const drafts = getDrafts().filter(d => !q || d.title.toLowerCase().includes(q) || d.body.toLowerCase().includes(q));
+  const list = document.getElementById('drafts-list');
+  if (!drafts.length) { list.innerHTML = `<div class="drafts-empty">${q ? '一致する下書きがありません' : '保存された下書きはありません'}</div>`; return; }
+  list.innerHTML = drafts.map(d => {
+    const date = new Date(d.updated).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return `
+      <div class="draft-item ${d.id === currentDraftId ? 'current' : ''}" onclick="loadDraft('${d.id}')">
+        <div class="draft-title">${esc(d.title)}</div>
+        <div class="draft-preview">${esc(d.body.trim().replace(/\n/g,' ').substring(0,60)) || '（本文なし）'}</div>
+        <div class="draft-meta">
+          <span>${date}</span>
+          <div class="draft-btns">
+            <button class="draft-btn" onclick="downloadDraft('${d.id}',event)">↓DL</button>
+            <button class="draft-btn del" onclick="deleteDraft('${d.id}',event)">削除</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function downloadDraft(id, e) {
+  e.stopPropagation();
+  const d = getDrafts().find(x => x.id === id);
+  if (d) triggerDownload(`# ${d.title}\n\n${d.body}`, d.title, 'md');
+}
+
+function copyAll() {
+  // タイトルは別フィールドのため本文のみコピー（本文はMarkdown）
+  const body = document.getElementById('editor').value;
+  if (!body.trim()) { showToast('本文がありません'); return; }
+  copyText(body, '📋 本文をMarkdownでコピーしました');
+}
+
+function copyChatMd() {
+  // 壁打ち（会話モード）のみを対談形式のMarkdownにする（編集指示・エラー通知は除外）
+  const log = chatLog.filter(m => (m.mode ?? 'chat') === 'chat');
+  if (!log.length) { showToast('チャット履歴がありません'); return; }
+  const md = log.map(m => `**${m.role === 'ai' ? 'AI' : '自分'}**：${m.text}`).join('\n\n');
+  copyText(md, '📋 チャットをMarkdownでコピーしました');
+}
+
+// クリップボードコピー（クリップボードAPI不可の環境ではexecCommandにフォールバック）
+function copyText(text, toastMsg) {
+  const done = () => showToast(toastMsg);
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => { fallbackCopy(text); done(); });
+  } else {
+    fallbackCopy(text);
+    done();
+  }
+}
+
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  ta.remove();
+}
+
+function triggerDownload(content, name, ext) {
+  const type = ext === 'md' ? 'text/markdown;charset=utf-8' : 'text/plain;charset=utf-8';
+  const a = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(new Blob([content], { type })),
+    download: (name.replace(/[/\\?%*:|"<>]/g, '_') || 'draft') + '.' + ext
+  });
+  a.click(); URL.revokeObjectURL(a.href);
+}
+
+function openDrafts() {
+  const si = document.getElementById('drafts-search-input');
+  if (si) si.value = '';
+  renderDraftsList();
+  document.getElementById('drafts-overlay').classList.add('visible');
+  document.getElementById('drafts-panel').classList.add('open');
+}
+function closeDrafts() { document.getElementById('drafts-overlay').classList.remove('visible'); document.getElementById('drafts-panel').classList.remove('open'); }
+
+// ==================== Helpers ====================
+function autoResize(el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
+
+let toastTimer;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2500);
+}
+</script>
+</body>
+</html>
