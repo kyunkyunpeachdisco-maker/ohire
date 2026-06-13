@@ -1330,8 +1330,43 @@ function getSelectedProvider() {
   return document.getElementById('provider-select').value;
 }
 
+let _modelOverride = null;
+
 function getSelectedModel() {
-  return document.getElementById('model-select').value;
+  return _modelOverride || document.getElementById('model-select').value;
+}
+
+function getDeepRewriteModel() {
+  const provider = getSelectedProvider();
+  return localStorage.getItem('note_deep_model_' + provider) || getSelectedModel();
+}
+
+function showDeepRewriteModelModal() {
+  return new Promise(resolve => {
+    if (document.querySelector('.modal-overlay')) { resolve(null); return; }
+    const provider = getSelectedProvider();
+    const models = PROVIDERS[provider].models;
+    const current = getDeepRewriteModel();
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal">
+        <h2>⚡ 本気リライト</h2>
+        <p>このリライトで使うモデルを選んでください。</p>
+        <select id="deep-rewrite-model-select" class="menu-select" style="width:100%;margin:8px 0 16px;font-size:16px">
+          ${models.map(m => `<option value="${m.value}"${m.value === current ? ' selected' : ''}>${m.label}</option>`).join('')}
+        </select>
+        <button class="modal-btn" id="deep-rewrite-start">⚡ この設定で実行</button>
+      </div>`;
+    overlay.addEventListener('click', e => { if (e.target === overlay) { overlay.remove(); resolve(null); } });
+    document.body.appendChild(overlay);
+    document.getElementById('deep-rewrite-start').addEventListener('click', () => {
+      const model = document.getElementById('deep-rewrite-model-select').value;
+      localStorage.setItem('note_deep_model_' + provider, model);
+      overlay.remove();
+      resolve(model);
+    });
+  });
 }
 
 function draftContextForChat() {
@@ -2108,6 +2143,9 @@ async function deepRewrite() {
   if (!hasChat && !document.getElementById('editor').value.trim()) {
     showToast('材料がありません（会話か下書きが必要です）'); return;
   }
+  const chosenModel = await showDeepRewriteModelModal();
+  if (!chosenModel) return;
+  _modelOverride = chosenModel;
   deepRewriting = true;
   try {
     showToast('⚡ 1/3 記事を書き直しています…');
@@ -2157,6 +2195,7 @@ ${critique}
     showToast('⚡ エラー: ' + e.message);
   } finally {
     deepRewriting = false;
+    _modelOverride = null;
   }
 }
 
