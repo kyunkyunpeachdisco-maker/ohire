@@ -2069,7 +2069,7 @@ async function singleShotComplete(prompt) {
       headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify({ model, max_tokens: MAX_OUT.anthropic, messages: [{ role: 'user', content: prompt }] })
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(`HTTP ${res.status}: ${e.error?.message || JSON.stringify(e)}`); }
     return (await res.json()).content[0]?.text?.trim() ?? '';
   } else if (provider === 'openai' || provider === 'groq') {
     const baseUrl = provider === 'openai' ? 'https://api.openai.com' : 'https://api.groq.com/openai';
@@ -2293,7 +2293,7 @@ async function anthropicSearchComplete(prompt) {
         messages
       })
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(`HTTP ${res.status}: ${e.error?.message || JSON.stringify(e)}`); }
     const data = await res.json();
     // サーバー側検索ループが上限に達した場合は続きを要求する
     if (data.stop_reason === 'pause_turn') {
