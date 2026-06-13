@@ -958,7 +958,8 @@
     <hr class="menu-divider">
     <button class="dropdown-item" onclick="proposeDraftUpdate(); closeMenu()">↺ リライト（会話全体から）</button>
     <button class="dropdown-item" onclick="deepRewrite(); closeMenu()">⚡ 本気リライト（検索つき・数分）</button>
-    <button class="dropdown-item" onclick="restoreSnapshot(); closeMenu()">↩ 適用前に戻す</button>
+    <button class="dropdown-item" onclick="restoreSnapshot(); closeMenu()">↩ 戻す</button>
+    <button class="dropdown-item" onclick="forwardSnapshot(); closeMenu()">↪ 進む</button>
     <hr class="menu-divider">
     <div class="menu-label">文体・トーン</div>
     <select id="tone-select" class="menu-select" onchange="saveToneSetting()">
@@ -1939,29 +1940,55 @@ function updateDiffInfo() {
     rej > 0 ? `確定で${total - rej}件反映（${rej}件却下）` : `確定で${total}件反映`;
 }
 
-// diff適用で本文が変わる直前の状態を世代保存（最大10件）
+// diff適用で本文が変わる直前の状態を世代保存（最大10件・undo/redo対応）
+// ストレージ構造: { snaps: [{body, at},...], cursor: number }
+// cursor は「現在表示中の位置」。通常は snaps.length（最新）。undo で -1、redo で +1。
+
+function getSnapState(key) {
+  try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch {}
+  return null;
+}
+
 function pushSnapshot() {
   const body = document.getElementById('editor').value;
   const key = 'note_snapshots_' + (currentDraftId || 'default');
-  let snaps = [];
-  try { snaps = JSON.parse(localStorage.getItem(key) || '[]'); } catch {}
-  snaps.push({ body, at: Date.now() });
-  if (snaps.length > 10) snaps = snaps.slice(-10);
-  localStorage.setItem(key, JSON.stringify(snaps));
+  let state = getSnapState(key) || { snaps: [], cursor: 0 };
+  // cursor が末尾以外（undo後）なら、その先の履歴を捨てて分岐
+  state.snaps = state.snaps.slice(0, state.cursor);
+  state.snaps.push({ body, at: Date.now() });
+  if (state.snaps.length > 20) state.snaps = state.snaps.slice(-20);
+  state.cursor = state.snaps.length;
+  localStorage.setItem(key, JSON.stringify(state));
 }
 
 function restoreSnapshot() {
   if (previewOn) togglePreview();
   const key = 'note_snapshots_' + (currentDraftId || 'default');
-  let snaps = [];
-  try { snaps = JSON.parse(localStorage.getItem(key) || '[]'); } catch {}
-  if (!snaps.length) { showToast('戻せる適用履歴がありません'); return; }
-  if (diffBlocks.length > 0) closeDiffView(); // 表示中の提案は破棄
-  const snap = snaps.pop();
-  localStorage.setItem(key, JSON.stringify(snaps));
-  document.getElementById('editor').value = snap.body;
+  let state = getSnapState(key) || { snaps: [], cursor: 0 };
+  if (state.cursor <= 0 || state.snaps.length === 0) { showToast('戻せる履歴がありません'); return; }
+  // 現在の本文を「進む先」として保持するため、cursor が末尾なら現在値を末尾に追加
+  if (state.cursor === state.snaps.length) {
+    state.snaps.push({ body: document.getElementById('editor').value, at: Date.now() });
+  }
+  state.cursor -= 1;
+  if (diffBlocks.length > 0) closeDiffView();
+  document.getElementById('editor').value = state.snaps[state.cursor].body;
+  localStorage.setItem(key, JSON.stringify(state));
   scheduleAutoSave();
-  showToast('↩ 適用前の状態に戻しました');
+  showToast('↩ 戻しました');
+}
+
+function forwardSnapshot() {
+  if (previewOn) togglePreview();
+  const key = 'note_snapshots_' + (currentDraftId || 'default');
+  let state = getSnapState(key) || { snaps: [], cursor: 0 };
+  if (state.cursor >= state.snaps.length - 1) { showToast('進める履歴がありません'); return; }
+  state.cursor += 1;
+  if (diffBlocks.length > 0) closeDiffView();
+  document.getElementById('editor').value = state.snaps[state.cursor].body;
+  localStorage.setItem(key, JSON.stringify(state));
+  scheduleAutoSave();
+  showToast('↪ 進めました');
 }
 
 function finalizeDiff() {
