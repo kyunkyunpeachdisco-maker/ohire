@@ -138,29 +138,6 @@
     .btn-sm:hover { background: #f5f5f5; }
     .btn-sm.active { border-color: #52c41a; color: #52c41a; }
 
-    /* Mobile tab bar */
-    .tab-bar {
-      display: none;
-      background: white;
-      border-bottom: 1px solid #e8e8e8;
-      flex-shrink: 0;
-    }
-
-    .tab-bar button {
-      flex: 1;
-      background: none;
-      border: none;
-      border-bottom: 2px solid transparent;
-      padding: 10px;
-      font-size: 13px;
-      font-weight: 600;
-      color: #aaa;
-      cursor: pointer;
-      font-family: inherit;
-    }
-
-    .tab-bar button.active { color: #1a1a1a; border-bottom-color: #1a1a1a; }
-
     /* Main layout */
     .main {
       display: flex;
@@ -757,9 +734,6 @@
 
     /* Mobile layout */
     @media (max-width: 680px) {
-      /* タブバー不要（上下分割のため） */
-      .tab-bar { display: none; }
-
       .pane-label {
         display: flex;
         align-items: center;
@@ -780,7 +754,6 @@
       .editor-pane.collapsed { flex: 0 0 auto !important; }
       .editor-pane.collapsed .editor-scroll,
       .editor-pane.collapsed #save-indicator,
-      .editor-pane.collapsed #diff-bar,
       .editor-pane.collapsed #diff-view,
       .editor-pane.collapsed #diff-controls { display: none; }
 
@@ -789,8 +762,7 @@
 
       /* 縦分割: エディタ上・チャット下 */
       .main { flex-direction: column; }
-      .editor-pane,
-      .editor-pane.hidden {
+      .editor-pane {
         position: static;
         display: flex;
         flex: 3;
@@ -798,8 +770,7 @@
         border-right: none;
         border-bottom: 1px solid #e8e8e8;
       }
-      .chat-pane,
-      .chat-pane.hidden {
+      .chat-pane {
         position: static;
         display: flex;
         width: 100%;
@@ -822,6 +793,8 @@
       #preview-view { padding: 16px 16px 90px; }
       #title-input { font-size: 22px; }
       .btn-sm span { display: none; }
+      /* モバイルはCtrlキーがないため送信ヒント不要 */
+      .chat-hint { display: none; }
       /* iOSズーム防止: input/textareaは16px以上必須 */
       input, textarea, select { font-size: 16px !important; }
 
@@ -859,12 +832,6 @@
   </div>
 </header>
 
-<!-- Mobile tab bar -->
-<div class="tab-bar" id="tab-bar">
-  <button id="tab-editor" class="active" onclick="switchTab('editor')">✏️ エディタ</button>
-  <button id="tab-chat" onclick="switchTab('chat')">✦ AI チャット</button>
-</div>
-
 <div class="main" id="main">
 
   <!-- Editor pane -->
@@ -883,11 +850,13 @@
     </div>
     <div class="editor-scroll">
       <textarea id="title-input" placeholder="タイトル" rows="1"
-        oninput="autoResize(this); scheduleAutoSave()"></textarea>
+        oninput="autoResize(this); scheduleAutoSave()"
+        onblur="flushPendingProposal()"></textarea>
       <textarea id="editor" placeholder="本文を書き始めてください..."
         oninput="autoResize(this); scheduleAutoSave()"
-        onblur="selStart=this.selectionStart; selEnd=this.selectionEnd;"></textarea>
+        onblur="selStart=this.selectionStart; selEnd=this.selectionEnd; flushPendingProposal()"></textarea>
     </div>
+    <div id="save-indicator"></div>
     <!-- Markdown preview -->
     <div id="preview-view"></div>
     <!-- Inline diff view -->
@@ -915,11 +884,11 @@
       <div class="chat-empty" id="chat-empty">
         <div>AIと壁打ちしながら記事を育てよう</div>
         <div class="examples">
-          <button class="example-chip" onclick="useExample(this)">今日考えていたことを話すから、記事にまとめてほしい</button>
+          <button class="example-chip" onclick="useExample(this)">今日考えていたことを話すから、壁打ちに付き合って</button>
           <button class="example-chip" onclick="useExample(this)">この話、面白いと思う？どう膨らませる？</button>
-          <button class="example-chip" onclick="useExample(this)">もっとカジュアルな文体にして</button>
-          <button class="example-chip" onclick="useExample(this)">読者に刺さる導入に書き直して</button>
-          <button class="example-chip" onclick="useExample(this)">結論をもっと強く打ち出して</button>
+          <button class="example-chip" onclick="useExample(this)">この考えの穴や反論を突っ込んで</button>
+          <button class="example-chip" onclick="useExample(this)">別の視点や切り口はある？</button>
+          <button class="example-chip" onclick="useExample(this)">具体例やたとえ話を一緒に考えて</button>
         </div>
       </div>
     </div>
@@ -941,6 +910,7 @@
         ></textarea>
         <button id="chat-send" onclick="sendChat()">↑</button>
       </div>
+      <div class="chat-hint">Enter=改行 / Ctrl+Enter（⌘+Enter）=送信</div>
     </div>
   </div>
 
@@ -1092,6 +1062,7 @@ let proposedText = '';
 let currentDraftId = localStorage.getItem('note_current_draft_id') || null;
 let attachedImage = null; // { dataUrl, base64, mimeType }
 let draftGenOn = false;
+let pendingProposal = null; // 本文編集中に届いたライターAI提案の保留分（エディタblur時に表示）
 // 議論メモ（古い会話のコンパクション結果）。upToはchatLogのうち畳み込み済みの件数
 let chatMemo = { text: '', upTo: 0 };
 let compacting = false;
@@ -1163,6 +1134,9 @@ document.addEventListener('DOMContentLoaded', () => {
   setIndicator('保存済み');
   restorePaneRatio();
   updateGistBtn();
+
+  // 長期間未使用時にブラウザがローカルデータを消すのを防ぐよう要求（対応ブラウザのみ・拒否されても害なし）
+  navigator.storage?.persist?.().catch(() => {});
 
   // iOS: キーボード表示時に position:fixed の chat-input-area が埋もれる問題を visualViewport で対処
   if (window.visualViewport && isMobile()) {
@@ -1286,18 +1260,6 @@ function switchProvider(saveToStorage = true) {
   const savedModel = localStorage.getItem('note_model_' + provider);
   if (savedModel) sel.value = savedModel;
   updateApiKeyBtn();
-}
-
-// ==================== Mobile tabs ====================
-function switchTab(tab) {
-  const editorPane = document.getElementById('editor-pane');
-  const chatPane   = document.getElementById('chat-pane');
-  document.getElementById('tab-editor').classList.toggle('active', tab === 'editor');
-  document.getElementById('tab-chat').classList.toggle('active',   tab === 'chat');
-  editorPane.classList.toggle('hidden', tab !== 'editor');
-  chatPane.classList.toggle('hidden',   tab !== 'chat');
-  // 表示後にtextareaの高さを再計算（非表示中はscrollHeight=0になるため）
-  if (tab === 'chat') autoResize(document.getElementById('chat-input'));
 }
 
 // ==================== Image attachment ====================
@@ -1424,7 +1386,7 @@ function getStyleMemo() {
 }
 
 function saveChatMemo() {
-  localStorage.setItem('note_chat_memo_' + (currentDraftId || 'default'), JSON.stringify(chatMemo));
+  safeSetItem('note_chat_memo_' + (currentDraftId || 'default'), JSON.stringify(chatMemo));
 }
 
 function loadChatMemo(id) {
@@ -1482,7 +1444,7 @@ ${lines}`;
 
 function saveChatLog() {
   const key = 'note_chat_log_' + (currentDraftId || 'default');
-  localStorage.setItem(key, JSON.stringify(chatLog));
+  safeSetItem(key, JSON.stringify(chatLog));
   gistDirty = true;
 }
 
@@ -1493,6 +1455,12 @@ async function sendChat() {
   const input = document.getElementById('chat-input');
   const instruction = input.value.trim();
   if (!instruction) return;
+
+  // 画像非対応プロバイダーは入力欄を消す前に弾く（書いた文章を失わせない）
+  if (attachedImage && (provider === 'groq' || provider === 'builtin')) {
+    showToast('このプロバイダーは画像非対応です。Claude・GPT・Geminiを使ってください');
+    return;
+  }
 
   const editor = document.getElementById('editor');
   // selStart/selEnd はエディタblur時に保存済みの値を使う（チャット欄タップで選択解除される問題の回避）
@@ -1513,13 +1481,6 @@ async function sendChat() {
   const btn = document.getElementById('chat-send');
   btn.innerHTML = '<span class="spinner"></span>';
   btn.disabled = true;
-
-  // 画像非対応プロバイダー
-  if (attachedImage && (provider === 'groq' || provider === 'builtin')) {
-    showToast('このプロバイダーは画像非対応です。Claude・GPT・Geminiを使ってください');
-    btn.innerHTML = '↑'; btn.disabled = false;
-    return;
-  }
 
   const prompt = isEditMode
     ? `以下のテキストを指示に従って編集してください。必ず下記のJSON形式のみで返してください（前置き・説明不要）。
@@ -1547,7 +1508,9 @@ ${targetText}`
 - 返答は簡潔に（1〜3文）
 
 参考情報として、議論を元に育っている下書きの現状を渡す。ユーザーが「あの段落」「さっきの結論」のように下書きに言及したら噛み合わせること。内容への意見はよいが、文面の執筆・修正の提案はしない。
-
+${attachedImage ? `
+画像が添付されている。あなたが画像を見られるのはこの1回だけで、以後の議論とライターAIの執筆は会話テキストだけが頼りになる。画像から読み取った内容・特徴を、返答の中で具体的に言語化して織り込むこと。
+` : ''}
 これまでの議論の要約メモ（古い会話分）:
 ${chatMemo.text || '（なし）'}
 
@@ -1958,7 +1921,7 @@ function pushSnapshot() {
   state.snaps.push({ body, at: Date.now() });
   if (state.snaps.length > 20) state.snaps = state.snaps.slice(-20);
   state.cursor = state.snaps.length;
-  localStorage.setItem(key, JSON.stringify(state));
+  safeSetItem(key, JSON.stringify(state));
 }
 
 function restoreSnapshot() {
@@ -1973,7 +1936,7 @@ function restoreSnapshot() {
   state.cursor -= 1;
   if (diffBlocks.length > 0) closeDiffView();
   document.getElementById('editor').value = state.snaps[state.cursor].body;
-  localStorage.setItem(key, JSON.stringify(state));
+  safeSetItem(key, JSON.stringify(state));
   scheduleAutoSave();
   showToast('↩ 戻しました');
 }
@@ -1986,7 +1949,7 @@ function forwardSnapshot() {
   state.cursor += 1;
   if (diffBlocks.length > 0) closeDiffView();
   document.getElementById('editor').value = state.snaps[state.cursor].body;
-  localStorage.setItem(key, JSON.stringify(state));
+  safeSetItem(key, JSON.stringify(state));
   scheduleAutoSave();
   showToast('↪ 進めました');
 }
@@ -2169,14 +2132,13 @@ async function proposeDraftUpdate(_retry = false) {
     const resultText = await singleShotComplete(prompt);
     const noChange = /^[「"'\s]*NO_CHANGE[」"'\s]*$/.test(resultText);
     if (resultText && !noChange && resultText !== currentDraft) {
-      // 選択編集のdiffをレビュー中なら、この自動提案は捨てる（次のターンで再生成される）
-      if (diffBlocks.length > 0 && diffSel.isSelection) return;
-      // 前の提案diffが残っていれば「却下ブロック以外をすべて反映」して閉じる（放置＝承認）
-      resolveOpenDiff();
-      const baseText = document.getElementById('editor').value.trim();
-      if (resultText === baseText) return;
-      showInlineDiff(baseText, resultText);
-      showEditorBadge(baseText ? '更新案あり' : '下書き生成');
+      // 本文を手編集中なら割り込まず保留し、エディタを離れたタイミングで表示する
+      const active = document.activeElement;
+      if (active === document.getElementById('editor') || active === document.getElementById('title-input')) {
+        pendingProposal = resultText;
+        return;
+      }
+      presentDraftProposal(resultText);
     }
   } catch (e) {
     if (!_retry) {
@@ -2186,6 +2148,26 @@ async function proposeDraftUpdate(_retry = false) {
       addDraftErrorMessage(e.message);
     }
   }
+}
+
+// ライターAIの提案をdiffレビューとして表示する（即時表示と保留分の表示で共用）
+function presentDraftProposal(resultText) {
+  // 選択編集のdiffをレビュー中なら、この自動提案は捨てる（次のターンで再生成される）
+  if (diffBlocks.length > 0 && diffSel.isSelection) return;
+  // 前の提案diffが残っていれば「却下ブロック以外をすべて反映」して閉じる（放置＝承認）
+  resolveOpenDiff();
+  const baseText = document.getElementById('editor').value.trim();
+  if (resultText === baseText) return;
+  showInlineDiff(baseText, resultText);
+  showEditorBadge(baseText ? '更新案あり' : '下書き生成');
+}
+
+function flushPendingProposal() {
+  if (!pendingProposal) return;
+  if (selStart !== selEnd) return; // 選択→編集指示の途中と思われる間は保留を続ける
+  const p = pendingProposal;
+  pendingProposal = null;
+  presentDraftProposal(p);
 }
 
 // ==================== ⚡ 本気リライト ====================
@@ -2347,7 +2329,15 @@ function showEditorBadge(label) {
 }
 
 function parseEditResponse(text) {
-  // ```json ... ``` や前後のゴミを除去してJSONを取り出す
+  // まず最初の{〜最後の}を試す（編集後テキストに}が含まれても壊れない）
+  const first = text.indexOf('{'), last = text.lastIndexOf('}');
+  if (first !== -1 && last > first) {
+    try {
+      const o = JSON.parse(text.slice(first, last + 1));
+      if (typeof o.edit === 'string') return { reply: o.reply ?? null, edit: o.edit };
+    } catch {}
+  }
+  // 次に非貪欲マッチ（JSONの後ろに}を含む説明文が付いたケース用）
   const m = text.match(/\{[\s\S]*?"reply"[\s\S]*?"edit"[\s\S]*?\}/) ||
             text.match(/\{[\s\S]*?"edit"[\s\S]*?"reply"[\s\S]*?\}/);
   if (m) {
@@ -2361,6 +2351,15 @@ function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+// 大きくなり得るデータのlocalStorage書き込み（容量超過で黙って失敗させない）
+function safeSetItem(key, value) {
+  try { localStorage.setItem(key, value); return true; }
+  catch {
+    showToast('⚠️ ブラウザの保存容量が一杯です。☁️保存のうえ古い下書きを削除してください');
+    return false;
+  }
+}
+
 // ==================== Draft storage ====================
 function getDrafts() {
   try { return JSON.parse(localStorage.getItem('note_drafts') || '[]'); }
@@ -2368,7 +2367,7 @@ function getDrafts() {
 }
 
 function saveDraftsToStorage(drafts) {
-  localStorage.setItem('note_drafts', JSON.stringify(drafts));
+  safeSetItem('note_drafts', JSON.stringify(drafts));
   renderDraftsList();
   gistDirty = true;
 }
@@ -2441,7 +2440,9 @@ function getToneInstruction() {
 
 function setIndicator(msg) {
   const el = document.getElementById('save-indicator');
-  if (el) el.textContent = msg;
+  if (!el) return;
+  const len = document.getElementById('editor').value.length;
+  el.textContent = `${len.toLocaleString('ja-JP')}字 ・ ${msg}`;
 }
 
 function maybeShowNightlyProposal(draft) {
@@ -2468,6 +2469,8 @@ function loadDraft(id) {
   document.getElementById('title-input').value = draft.title === '（無題）' ? '' : draft.title;
   document.getElementById('editor').value = draft.body;
   autoResize(document.getElementById('title-input'));
+  pendingProposal = null; // 前の下書き向けの保留提案は破棄
+  setIndicator('保存済み');
   // チャット履歴をこの下書き用に切り替え
   clearChatUI();
   const savedLog = localStorage.getItem('note_chat_log_' + id);
@@ -2498,6 +2501,8 @@ function deleteDraft(id, e) {
     document.getElementById('title-input').value = '';
     document.getElementById('editor').value = '';
     autoResize(document.getElementById('title-input'));
+    pendingProposal = null;
+    setIndicator('保存済み');
   }
   showToast('削除しました');
 }
@@ -2517,11 +2522,11 @@ function clearChatUI() {
   messages.innerHTML = `<div class="chat-empty" id="chat-empty">
     <div>AIと壁打ちしながら記事を育てよう</div>
     <div class="examples">
-      <button class="example-chip" onclick="useExample(this)">今日考えていたことを話すから、記事にまとめてほしい</button>
+      <button class="example-chip" onclick="useExample(this)">今日考えていたことを話すから、壁打ちに付き合って</button>
       <button class="example-chip" onclick="useExample(this)">この話、面白いと思う？どう膨らませる？</button>
-      <button class="example-chip" onclick="useExample(this)">もっとカジュアルな文体にして</button>
-      <button class="example-chip" onclick="useExample(this)">読者に刺さる導入に書き直して</button>
-      <button class="example-chip" onclick="useExample(this)">結論をもっと強く打ち出して</button>
+      <button class="example-chip" onclick="useExample(this)">この考えの穴や反論を突っ込んで</button>
+      <button class="example-chip" onclick="useExample(this)">別の視点や切り口はある？</button>
+      <button class="example-chip" onclick="useExample(this)">具体例やたとえ話を一緒に考えて</button>
     </div>
   </div>`;
 }
@@ -2532,6 +2537,8 @@ function newDraft() {
   document.getElementById('title-input').value = '';
   document.getElementById('editor').value = '';
   autoResize(document.getElementById('title-input'));
+  pendingProposal = null;
+  setIndicator('保存済み');
   clearChatUI(); // 新規下書き = チャットもリセット
   chatMemo = { text: '', upTo: 0 };
   closeDrafts();
@@ -2539,14 +2546,14 @@ function newDraft() {
 }
 
 function branchDraft() {
-  // チャット履歴を引き継いで新規下書きを作成
-  const inheritedLog = [...chatLog];
+  // チャット履歴を引き継いで新規下書きを作成（chatLogは変えない）
   currentDraftId = null;
   localStorage.removeItem('note_current_draft_id');
   document.getElementById('title-input').value = '';
   document.getElementById('editor').value = '';
   autoResize(document.getElementById('title-input'));
-  // チャットはそのまま引き継ぎ（chatLogは変えない）
+  pendingProposal = null;
+  setIndicator('保存済み');
   closeDrafts();
   document.getElementById('editor').focus();
   showToast('⑂ チャットを引き継いで新規下書きを作成しました');
@@ -2728,9 +2735,11 @@ async function gistUpload(silent = false) {
   const headers = { 'Authorization': `Bearer ${githubPAT}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28' };
   try {
     if (!silent) showToast('アップロード中…');
+    const body = JSON.stringify(reqBody);
     const res = await fetch(
       gistId ? `https://api.github.com/gists/${gistId}` : 'https://api.github.com/gists',
-      { method: gistId ? 'PATCH' : 'POST', headers, body: JSON.stringify(reqBody) }
+      // ページ破棄時（visibilitychange経由）も送信を完了させるためkeepalive。ただし約64KBの上限があるため小さい時のみ
+      { method: gistId ? 'PATCH' : 'POST', headers, body, keepalive: silent && body.length < 60000 }
     );
     if (!res.ok) throw new Error(`GitHub API: ${res.status}`);
     const json = await res.json();
@@ -2779,13 +2788,13 @@ async function gistDownload() {
       // メッセージ件数が多い方（＝進んでいる方）を採用
       let localLen = 0;
       try { localLen = (JSON.parse(localStorage.getItem('note_chat_log_' + id) || '[]') || []).length; } catch {}
-      if ((log || []).length >= localLen) localStorage.setItem('note_chat_log_' + id, JSON.stringify(log));
+      if ((log || []).length >= localLen) safeSetItem('note_chat_log_' + id, JSON.stringify(log));
     });
     Object.entries(data.chatMemos || {}).forEach(([id, memo]) => {
       // 畳み込み済み件数（upTo）が進んでいる方を採用
       let localUpTo = -1;
       try { localUpTo = (JSON.parse(localStorage.getItem('note_chat_memo_' + id) || 'null') || {}).upTo ?? -1; } catch {}
-      if ((memo?.upTo ?? 0) >= localUpTo) localStorage.setItem('note_chat_memo_' + id, JSON.stringify(memo));
+      if ((memo?.upTo ?? 0) >= localUpTo) safeSetItem('note_chat_memo_' + id, JSON.stringify(memo));
     });
     if (typeof data.styleMemo === 'string' && data.styleMemo) {
       localStorage.setItem('note_style_memo', data.styleMemo);
@@ -2802,6 +2811,8 @@ async function gistDownload() {
       document.getElementById('editor').value = cur.body;
       autoResize(document.getElementById('title-input'));
       autoResize(document.getElementById('editor'));
+      pendingProposal = null;
+      setIndicator('保存済み');
       clearChatUI();
       const savedLog = localStorage.getItem('note_chat_log_' + currentDraftId);
       if (savedLog) {
@@ -2888,6 +2899,7 @@ function showTutorial() {
           <li>下のチャットでテーマについて雑談する（このAIは議論相手。記事は裏で別のAIが書く）</li>
           <li>ヘッダーの ✍️ をONにすると、話すたびに上の下書きが育っていく</li>
           <li>提案された変更は<b>放置すれば反映</b>。嫌な箇所だけタップで却下</li>
+          <li>本文の一部を<b>選択してから</b>チャットで指示すると、その部分だけをピンポイントで直せる</li>
           <li>できあがったら 📋 で本文をコピーして、noteに貼るだけ</li>
         </ul>
       </div>
