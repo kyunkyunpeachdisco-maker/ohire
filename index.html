@@ -959,10 +959,10 @@
     <hr class="menu-divider">
     <button class="dropdown-item" onclick="showApiKeyModal(); closeMenu()" id="api-key-btn">🔑 APIキー設定</button>
     <hr class="menu-divider">
-    <div class="menu-label">Gist同期</div>
-    <button class="dropdown-item" onclick="showGistModal(); closeMenu()" id="gist-btn">☁️ Gist設定</button>
-    <button class="dropdown-item" onclick="gistUpload(); closeMenu()">↑ クラウドに保存</button>
-    <button class="dropdown-item" onclick="gistDownload(); closeMenu()">↓ クラウドから読み込み</button>
+    <div class="menu-label">GitHub同期</div>
+    <button class="dropdown-item" onclick="showRepoModal(); closeMenu()" id="repo-btn">☁️ 同期設定（リポジトリ）</button>
+    <button class="dropdown-item" onclick="repoUpload(); closeMenu()">↑ リポジトリに保存</button>
+    <button class="dropdown-item" onclick="repoDownload(); closeMenu()">↓ リポジトリから読み込み</button>
     <hr class="menu-divider">
     <button class="dropdown-item" onclick="showTutorial(); closeMenu()">❓ 使い方</button>
     <button class="dropdown-item danger" onclick="clearChat(); closeMenu()">🗑 チャット履歴を削除</button>
@@ -1055,8 +1055,8 @@ const apiKeys = {
   gemini:    localStorage.getItem('note_apikey_gemini') || '',
 };
 let githubPAT = localStorage.getItem('note_github_pat') || '';
-let gistId    = localStorage.getItem('note_gist_id')    || '';
-let gistDirty = false; // 最後の☁️保存以降にローカル変更があるか
+let dataRepo  = localStorage.getItem('note_data_repo')  || ''; // 同期先リポジトリ「owner/repo」
+let repoDirty = false; // 最後の☁️保存以降にローカル変更があるか
 let selStart = 0, selEnd = 0;
 let proposedText = '';
 let currentDraftId = localStorage.getItem('note_current_draft_id') || null;
@@ -1133,7 +1133,7 @@ document.addEventListener('DOMContentLoaded', () => {
   autoResize(document.getElementById('chat-input'));
   setIndicator('保存済み');
   restorePaneRatio();
-  updateGistBtn();
+  updateRepoBtn();
 
   // 長期間未使用時にブラウザがローカルデータを消すのを防ぐよう要求（対応ブラウザのみ・拒否されても害なし）
   navigator.storage?.persist?.().catch(() => {});
@@ -1445,7 +1445,7 @@ ${lines}`;
 function saveChatLog() {
   const key = 'note_chat_log_' + (currentDraftId || 'default');
   safeSetItem(key, JSON.stringify(chatLog));
-  gistDirty = true;
+  repoDirty = true;
 }
 
 async function sendChat() {
@@ -2369,7 +2369,7 @@ function getDrafts() {
 function saveDraftsToStorage(drafts) {
   safeSetItem('note_drafts', JSON.stringify(drafts));
   renderDraftsList();
-  gistDirty = true;
+  repoDirty = true;
 }
 
 let autoSaveTimer;
@@ -2492,6 +2492,7 @@ function deleteDraft(id, e) {
   if (!confirm('この下書きを削除しますか？')) return;
   const drafts = getDrafts().filter(d => d.id !== id);
   saveDraftsToStorage(drafts);
+  deleteDraftRemote(id);
   localStorage.removeItem('note_chat_log_' + id);
   localStorage.removeItem('note_chat_memo_' + id);
   localStorage.removeItem('note_snapshots_' + id);
@@ -2643,167 +2644,216 @@ function openDrafts() {
 }
 function closeDrafts() { document.getElementById('drafts-overlay').classList.remove('visible'); document.getElementById('drafts-panel').classList.remove('open'); }
 
-// ==================== Gist Sync ====================
+// ==================== GitHub同期 ====================
+// 同期先はユーザー自身のリポジトリ（プライベート可）。データ構成:
+//   drafts/<id>/article.md … タイトル(H1)+本文。人間・Claude Codeがそのまま読み書きする正本
+//   drafts/<id>/data.json  … メタ情報（updated等）とチャットログ・議論メモ
+//   settings.json          … 文体・執筆方針
+// article.md の本文が data.json と食い違っていたら「外部（Claude Code・夜間リライト等）での編集」
+// とみなし、↓読み込み時にdiffレビュー（夜間リライト案と同じUI）として提示する。
+
 // アプリを閉じる・他アプリに切り替えた時、未同期の変更があれば自動で☁️保存（ベストエフォート）
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden' && gistDirty && githubPAT && gistId) {
-    gistUpload(true);
+  if (document.visibilityState === 'hidden' && repoDirty && githubPAT && dataRepo) {
+    repoUpload(true);
   }
 });
 
-function showGistModal() {
-  if (document.querySelector('.modal-overlay')) return;
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `
-    <div class="modal">
-      <h2>☁️ Gist同期設定</h2>
-      <p>GitHub Personal Access Token（gistスコープ）を設定します。Gist IDは初回アップロード時に自動作成されます。</p>
-      <div class="modal-input-row">
-        <input type="password" id="modal-pat" placeholder="GitHub Personal Access Token" autocomplete="off" />
-        <button class="modal-copy-btn" onclick="copyGistField('modal-pat', 'PAT')" title="コピー">📋</button>
-      </div>
-      <div class="modal-input-row">
-        <input type="text" id="modal-gist-id" placeholder="Gist ID（初回アップロード後に自動設定）" autocomplete="off" />
-        <button class="modal-copy-btn" onclick="copyGistField('modal-gist-id', 'Gist ID')" title="コピー">📋</button>
-      </div>
-      <button class="modal-btn" id="gist-modal-save">保存</button>
-    </div>
-  `;
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-  document.body.appendChild(overlay);
-  document.getElementById('modal-pat').value = githubPAT;
-  document.getElementById('modal-gist-id').value = gistId;
-  document.getElementById('gist-modal-save').addEventListener('click', saveGistSettings);
+// このセッションで把握しているリモートの状態（差分アップロードとsha競合の解決に使う）
+const remoteSha = {};     // path -> sha（未取得はキーなし、リモートに無いファイルはnull）
+const remoteContent = {}; // path -> content
+
+function ghHeaders() {
+  return {
+    'Authorization': `Bearer ${githubPAT}`,
+    'Accept': 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
 }
 
-function copyGistField(id, label) {
-  const v = document.getElementById(id)?.value.trim();
-  if (!v) { showToast(label + 'はまだ設定されていません'); return; }
-  copyText(v, '📋 ' + label + 'をコピーしました');
+// UTF-8対応のbase64。大きな文字列でもスタックを溢れさせないよう分割処理
+function b64encode(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+}
+function b64decode(b64) {
+  const bin = atob(b64.replace(/\s/g, ''));
+  return new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0)));
 }
 
-function saveGistSettings() {
-  githubPAT = document.getElementById('modal-pat')?.value.trim() ?? '';
-  gistId    = document.getElementById('modal-gist-id')?.value.trim() ?? '';
-  localStorage.setItem('note_github_pat', githubPAT);
-  localStorage.setItem('note_gist_id',    gistId);
-  updateGistBtn();
-  document.querySelector('.modal-overlay')?.remove();
-  showToast('Gist設定を保存しました');
+// ファイル取得。404（未作成）はnull
+async function ghGetFile(path) {
+  const res = await fetch(`https://api.github.com/repos/${dataRepo}/contents/${path}`, { headers: ghHeaders() });
+  if (res.status === 404) { remoteSha[path] = null; remoteContent[path] = null; return null; }
+  if (!res.ok) throw new Error(`GitHub API: ${res.status}`);
+  const json = await res.json();
+  const content = b64decode(json.content);
+  remoteSha[path] = json.sha;
+  remoteContent[path] = content;
+  return { sha: json.sha, content };
 }
 
-function updateGistBtn() {
-  const btn = document.getElementById('gist-btn');
-  if (!btn) return;
-  const ok = !!(githubPAT && gistId);
-  btn.style.color = ok ? '#52c41a' : '#333';
-}
-
-function collectAllChatLogs() {
-  saveChatLog();
-  const logs = {};
-  getDrafts().forEach(d => {
-    const raw = localStorage.getItem('note_chat_log_' + d.id);
-    if (raw) { try { logs[d.id] = JSON.parse(raw); } catch {} }
+// 内容に変更がある時だけPUT。sha競合（並行更新）は取り直して1回だけ上書き再試行
+// （どちらの内容を残すかのマージ判断は↓読み込み側の役割）
+async function ghSyncFile(path, content, message) {
+  if (!(path in remoteSha)) await ghGetFile(path);
+  if (remoteContent[path] === content) return false;
+  const put = () => fetch(`https://api.github.com/repos/${dataRepo}/contents/${path}`, {
+    method: 'PUT',
+    headers: { ...ghHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, content: b64encode(content), ...(remoteSha[path] ? { sha: remoteSha[path] } : {}) })
   });
-  return logs;
+  let res = await put();
+  if (res.status === 409 || res.status === 422) {
+    await ghGetFile(path);
+    res = await put();
+  }
+  if (!res.ok) throw new Error(`GitHub API: ${res.status}`);
+  remoteSha[path] = (await res.json()).content.sha;
+  remoteContent[path] = content;
+  return true;
 }
 
-function collectAllChatMemos() {
-  saveChatMemo();
-  const memos = {};
-  getDrafts().forEach(d => {
-    const raw = localStorage.getItem('note_chat_memo_' + d.id);
-    if (raw) { try { memos[d.id] = JSON.parse(raw); } catch {} }
+async function ghDeleteFile(path, message) {
+  if (!(path in remoteSha)) await ghGetFile(path);
+  if (!remoteSha[path]) return;
+  const res = await fetch(`https://api.github.com/repos/${dataRepo}/contents/${path}`, {
+    method: 'DELETE',
+    headers: { ...ghHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, sha: remoteSha[path] })
   });
-  return memos;
+  if (res.ok) { remoteSha[path] = null; remoteContent[path] = null; }
 }
 
-async function gistUpload(silent = false) {
-  if (!githubPAT) { if (!silent) { showToast('GitHubトークンを設定してください'); showGistModal(); } return; }
-  const payload = JSON.stringify({
-    version: 2,
-    syncedAt: new Date().toISOString(),
-    drafts: getDrafts(),
-    chatLogs: collectAllChatLogs(),
-    chatMemos: collectAllChatMemos(),
-    styleMemo: localStorage.getItem('note_style_memo') || '',
-    tone: localStorage.getItem('note_tone') || ''
+// pathの最新コミットメッセージ（外部編集の要約表示に使う）
+async function ghLastCommitMessage(path) {
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${dataRepo}/commits?path=${encodeURIComponent(path)}&per_page=1`,
+      { headers: ghHeaders() }
+    );
+    if (!res.ok) return '';
+    return (await res.json())[0]?.commit?.message || '';
+  } catch { return ''; }
+}
+
+function articleMd(title, body) { return `# ${title}\n\n${body}\n`; }
+
+function parseArticleMd(text) {
+  const m = String(text).match(/^# (.*)\n+([\s\S]*)$/);
+  return m
+    ? { title: m[1].trim(), body: m[2].replace(/\n$/, '') }
+    : { title: '', body: String(text).replace(/\n$/, '') };
+}
+
+function draftDataJson(d) {
+  let log = [], memo = null;
+  try { log = JSON.parse(localStorage.getItem('note_chat_log_' + d.id) || '[]'); } catch {}
+  try { memo = JSON.parse(localStorage.getItem('note_chat_memo_' + d.id) || 'null'); } catch {}
+  return JSON.stringify({
+    id: d.id, title: d.title, body: d.body,
+    created: d.created, updated: d.updated,
+    chatLog: log, chatMemo: memo
   }, null, 2);
-  const reqBody = { description: 'Ohire drafts', public: false, files: { 'ohire-drafts.json': { content: payload } } };
-  const headers = { 'Authorization': `Bearer ${githubPAT}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28' };
+}
+
+async function repoUpload(silent = false) {
+  if (!githubPAT || !dataRepo) { if (!silent) { showToast('GitHub同期を設定してください'); showRepoModal(); } return; }
+  autoSaveCurrentDraft(); // 編集中の内容（デバウンス待ち分）を確定させてから同期
+  saveChatLog();
+  saveChatMemo();
   try {
     if (!silent) showToast('アップロード中…');
-    const body = JSON.stringify(reqBody);
-    const res = await fetch(
-      gistId ? `https://api.github.com/gists/${gistId}` : 'https://api.github.com/gists',
-      // ページ破棄時（visibilitychange経由）も送信を完了させるためkeepalive。ただし約64KBの上限があるため小さい時のみ
-      { method: gistId ? 'PATCH' : 'POST', headers, body, keepalive: silent && body.length < 60000 }
-    );
-    if (!res.ok) throw new Error(`GitHub API: ${res.status}`);
-    const json = await res.json();
-    if (!gistId) {
-      gistId = json.id;
-      localStorage.setItem('note_gist_id', gistId);
-      updateGistBtn();
+    for (const d of getDrafts()) {
+      await ghSyncFile(`drafts/${d.id}/article.md`, articleMd(d.title, d.body), `更新: ${d.title}`);
+      await ghSyncFile(`drafts/${d.id}/data.json`, draftDataJson(d), `更新: ${d.title}（メタ・チャット）`);
     }
-    gistDirty = false;
-    if (!silent) showToast('☁️ クラウドに保存しました');
+    const settings = JSON.stringify({
+      version: 3,
+      styleMemo: localStorage.getItem('note_style_memo') || '',
+      tone: localStorage.getItem('note_tone') || ''
+    }, null, 2);
+    await ghSyncFile('settings.json', settings, '更新: 設定');
+    repoDirty = false;
+    if (!silent) showToast('☁️ リポジトリに保存しました');
   } catch (e) { if (!silent) showToast('エラー: ' + e.message); }
 }
 
-async function gistDownload() {
-  if (!githubPAT) { showToast('GitHubトークンを設定してください'); showGistModal(); return; }
-  if (!gistId)    { showToast('まずクラウドに保存してください'); return; }
-  const headers = { 'Authorization': `Bearer ${githubPAT}`, 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+async function repoDownload() {
+  if (!githubPAT || !dataRepo) { showToast('GitHub同期を設定してください'); showRepoModal(); return; }
   try {
     showToast('ダウンロード中…');
-    const res = await fetch(`https://api.github.com/gists/${gistId}`, { headers });
+    const res = await fetch(`https://api.github.com/repos/${dataRepo}/contents/drafts`, { headers: ghHeaders() });
+    if (res.status === 404) { showToast('リポジトリにまだデータがありません。先に↑保存してください'); return; }
     if (!res.ok) throw new Error(`GitHub API: ${res.status}`);
-    const json = await res.json();
-    const raw = json.files['ohire-drafts.json']?.content;
-    if (!raw) throw new Error('データが見つかりません');
-    const data = JSON.parse(raw);
+    const entries = (await res.json()).filter(e => e.type === 'dir');
 
-    // ローカルと簡易マージ（全置き換えをやめ、最後の☁️保存以降のローカル作業が消えないようにする）
     const localDrafts = getDrafts();
     const localById = {};
     localDrafts.forEach(d => { localById[d.id] = d; });
-    const remoteDrafts = data.drafts || [];
-    const remoteIds = new Set(remoteDrafts.map(d => d.id));
-    const merged = remoteDrafts.map(rd => {
+    const remoteIds = new Set();
+    const merged = [];
+
+    for (const entry of entries) {
+      const dataFile = await ghGetFile(`drafts/${entry.name}/data.json`);
+      if (!dataFile) continue;
+      let rd;
+      try { rd = JSON.parse(dataFile.content); } catch { continue; }
+      remoteIds.add(rd.id);
+
+      // updatedが新しい方を正とする簡易マージ（Gist版と同じ方針）
       const ld = localById[rd.id];
-      if (!ld) return rd;
-      // updatedが新しい方を正とする。夜間リライト案はGist側にあれば常に取り込む
-      const base = (ld.updated || 0) > (rd.updated || 0) ? { ...ld } : { ...rd };
-      if (rd.nightlyProposal) base.nightlyProposal = rd.nightlyProposal;
-      return base;
-    });
+      const base = ld && (ld.updated || 0) > (rd.updated || 0)
+        ? { ...ld }
+        : { id: rd.id, title: rd.title, body: rd.body, created: rd.created, updated: rd.updated };
+
+      // チャットログ: メッセージ件数が多い方（＝進んでいる方）を採用
+      let localLen = 0;
+      try { localLen = (JSON.parse(localStorage.getItem('note_chat_log_' + rd.id) || '[]') || []).length; } catch {}
+      if ((rd.chatLog || []).length >= localLen) safeSetItem('note_chat_log_' + rd.id, JSON.stringify(rd.chatLog || []));
+
+      // 議論メモ: 畳み込み済み件数（upTo）が進んでいる方を採用
+      let localUpTo = -1;
+      try { localUpTo = (JSON.parse(localStorage.getItem('note_chat_memo_' + rd.id) || 'null') || {}).upTo ?? -1; } catch {}
+      if (rd.chatMemo && (rd.chatMemo.upTo ?? 0) >= localUpTo) safeSetItem('note_chat_memo_' + rd.id, JSON.stringify(rd.chatMemo));
+
+      // article.md の本文が data.json と食い違う＝外部（Claude Code・夜間リライト等）で編集された
+      // → 夜間リライト案と同じdiffレビューとして取り込む（要約は最新コミットメッセージ）
+      const artFile = await ghGetFile(`drafts/${entry.name}/article.md`);
+      if (artFile) {
+        const art = parseArticleMd(artFile.content);
+        if (art.body.trim() !== (rd.body || '').trim() && art.body.trim() !== (base.body || '').trim()) {
+          base.nightlyProposal = { body: art.body, summary: await ghLastCommitMessage(`drafts/${entry.name}/article.md`) };
+        }
+        if (art.title && art.title !== rd.title) base.title = art.title;
+      }
+      merged.push(base);
+    }
+
     // ローカルにしかない下書き（最後のアップロード後に作成）は残す
     localDrafts.forEach(ld => { if (!remoteIds.has(ld.id)) merged.push(ld); });
     merged.sort((a, b) => (b.updated || 0) - (a.updated || 0));
     saveDraftsToStorage(merged);
-    Object.entries(data.chatLogs || {}).forEach(([id, log]) => {
-      // メッセージ件数が多い方（＝進んでいる方）を採用
-      let localLen = 0;
-      try { localLen = (JSON.parse(localStorage.getItem('note_chat_log_' + id) || '[]') || []).length; } catch {}
-      if ((log || []).length >= localLen) safeSetItem('note_chat_log_' + id, JSON.stringify(log));
-    });
-    Object.entries(data.chatMemos || {}).forEach(([id, memo]) => {
-      // 畳み込み済み件数（upTo）が進んでいる方を採用
-      let localUpTo = -1;
-      try { localUpTo = (JSON.parse(localStorage.getItem('note_chat_memo_' + id) || 'null') || {}).upTo ?? -1; } catch {}
-      if ((memo?.upTo ?? 0) >= localUpTo) safeSetItem('note_chat_memo_' + id, JSON.stringify(memo));
-    });
-    if (typeof data.styleMemo === 'string' && data.styleMemo) {
-      localStorage.setItem('note_style_memo', data.styleMemo);
-      document.getElementById('style-memo').value = data.styleMemo;
+
+    const settingsFile = await ghGetFile('settings.json');
+    if (settingsFile) {
+      try {
+        const s = JSON.parse(settingsFile.content);
+        if (typeof s.styleMemo === 'string' && s.styleMemo) {
+          localStorage.setItem('note_style_memo', s.styleMemo);
+          document.getElementById('style-memo').value = s.styleMemo;
+        }
+        if (typeof s.tone === 'string' && s.tone) {
+          localStorage.setItem('note_tone', s.tone);
+          document.getElementById('tone-select').value = s.tone;
+        }
+      } catch {}
     }
-    if (typeof data.tone === 'string' && data.tone) {
-      localStorage.setItem('note_tone', data.tone);
-      document.getElementById('tone-select').value = data.tone;
-    }
+
     // 現在の下書きを再描画（マージ結果を正とする）
     const cur = merged.find(d => d.id === currentDraftId);
     if (cur) {
@@ -2825,8 +2875,85 @@ async function gistDownload() {
       loadChatMemo(currentDraftId);
       maybeShowNightlyProposal(cur);
     }
-    showToast('☁️ クラウドから読み込みました');
+    showToast('☁️ リポジトリから読み込みました');
   } catch (e) { showToast('エラー: ' + e.message); }
+}
+
+// 下書き削除時、リモート側のファイルも消す（ベストエフォート）
+function deleteDraftRemote(id) {
+  if (!githubPAT || !dataRepo) return;
+  ghDeleteFile(`drafts/${id}/article.md`, `削除: ${id}`).catch(() => {});
+  ghDeleteFile(`drafts/${id}/data.json`, `削除: ${id}`).catch(() => {});
+}
+
+function showRepoModal() {
+  if (document.querySelector('.modal-overlay')) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal tutorial-modal">
+      <h2>☁️ GitHub同期設定</h2>
+      <p>下書きを自分のGitHubリポジトリ（非公開でOK・無料）に保存します。端末をまたいで同期でき、ブラウザのデータ消去にも備えられます。GitHubアカウントがあれば3分で終わります。</p>
+      <div class="tutorial-step"><b>1. 保存先リポジトリを作る（初回のみ）</b>
+        <ul>
+          <li><a href="https://github.com/new" target="_blank" rel="noopener">GitHubでリポジトリを作成</a>（名前は例: <b>ohire-data</b>）</li>
+          <li>「<b>Private</b>」を選び、「Add a README file」にチェックを入れて作成</li>
+        </ul>
+      </div>
+      <div class="tutorial-step"><b>2. アクセス用トークンを作る</b>
+        <ul>
+          <li><a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Fine-grained tokenを発行</a></li>
+          <li>Repository access：「Only select repositories」で1で作ったリポジトリだけを選ぶ</li>
+          <li>Permissions：<b>Contents = Read and write</b> のみ</li>
+          <li>作成後に表示されるトークンをコピー</li>
+        </ul>
+      </div>
+      <div class="tutorial-step"><b>3. 下に入力して保存</b>
+        <ul>
+          <li>保存したら ☰メニューの「<b>↑ リポジトリに保存</b>」で初回同期</li>
+          <li>他の端末でも使うなら、同じ2つをその端末で入力（📋でコピーできます）</li>
+        </ul>
+      </div>
+      <div class="modal-input-row">
+        <input type="text" id="modal-repo" placeholder="ユーザー名/リポジトリ名" autocomplete="off" />
+        <button class="modal-copy-btn" onclick="copyModalField('modal-repo', 'リポジトリ')" title="コピー">📋</button>
+      </div>
+      <div class="modal-input-row">
+        <input type="password" id="modal-pat" placeholder="GitHub Personal Access Token" autocomplete="off" />
+        <button class="modal-copy-btn" onclick="copyModalField('modal-pat', 'PAT')" title="コピー">📋</button>
+      </div>
+      <p class="tutorial-note">おまけ：<a href="https://claude.ai/code" target="_blank" rel="noopener">claude.ai/code</a> でこのリポジトリを開くと、Claude Codeに下書き（drafts/…/article.md）を読ませてリライトを頼めます。編集されたら「↓ リポジトリから読み込み」で変更案がレビューとして表示されます。</p>
+      <button class="modal-btn" id="repo-modal-save">保存</button>
+    </div>
+  `;
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+  document.getElementById('modal-repo').value = dataRepo;
+  document.getElementById('modal-pat').value = githubPAT;
+  document.getElementById('repo-modal-save').addEventListener('click', saveRepoSettings);
+}
+
+function copyModalField(id, label) {
+  const v = document.getElementById(id)?.value.trim();
+  if (!v) { showToast(label + 'はまだ設定されていません'); return; }
+  copyText(v, '📋 ' + label + 'をコピーしました');
+}
+
+function saveRepoSettings() {
+  githubPAT = document.getElementById('modal-pat')?.value.trim() ?? '';
+  dataRepo  = (document.getElementById('modal-repo')?.value.trim() ?? '')
+    .replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/$/, '');
+  localStorage.setItem('note_github_pat', githubPAT);
+  localStorage.setItem('note_data_repo', dataRepo);
+  updateRepoBtn();
+  document.querySelector('.modal-overlay')?.remove();
+  showToast('GitHub同期設定を保存しました');
+}
+
+function updateRepoBtn() {
+  const btn = document.getElementById('repo-btn');
+  if (!btn) return;
+  btn.style.color = (githubPAT && dataRepo) ? '#52c41a' : '#333';
 }
 
 // ==================== API Key ====================
@@ -2901,6 +3028,11 @@ function showTutorial() {
           <li>提案された変更は<b>放置すれば反映</b>。嫌な箇所だけタップで却下</li>
           <li>本文の一部を<b>選択してから</b>チャットで指示すると、その部分だけをピンポイントで直せる</li>
           <li>できあがったら 📋 で本文をコピーして、noteに貼るだけ</li>
+        </ul>
+      </div>
+      <div class="tutorial-step"><b>3. データを残す・持ち運ぶ（おすすめ）</b>
+        <ul>
+          <li>☰メニュー →「☁️ 同期設定（リポジトリ）」で、自分のGitHubに下書きを保存できる（無料・非公開）。スマホとPCの同期・バックアップになり、Claude Codeにリライトを頼むこともできる。手順は設定画面に書いてあります</li>
         </ul>
       </div>
       <p class="tutorial-note">データはこの端末のブラウザ内に保存されます。iPhoneの人は共有メニューから「ホーム画面に追加」して使うと消えにくくおすすめです。使い方は ☰メニュー →「❓ 使い方」でいつでも見られます。</p>
