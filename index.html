@@ -979,6 +979,7 @@
       <option value="claude-haiku-4-5">Haiku（最安）</option>
     </select>
     <hr class="menu-divider">
+    <button class="dropdown-item" onclick="precheckInAnalyzer(); closeMenu()">📊 note-analyzerで公開前チェック</button>
     <button class="dropdown-item" onclick="showTutorial(); closeMenu()">❓ 使い方</button>
     <button class="dropdown-item danger" onclick="clearChat(); closeMenu()">🗑 チャット履歴を削除</button>
   </div>
@@ -2661,6 +2662,20 @@ function copyChatMd() {
   copyText(md, '📋 チャットをMarkdownでコピーしました');
 }
 
+// note-analyzer（同一オリジンのGitHub Pages）にlocalStorage経由で下書きを渡して公開前チェックを開く
+function precheckInAnalyzer() {
+  const title = document.getElementById('title-input').value.trim();
+  const body = document.getElementById('editor').value.trim();
+  if (!title && !body) { showToast('チェックする下書きがありません'); return; }
+  autoSaveCurrentDraft();
+  try {
+    // キー名は受信側（note-analyzer）との規約のため固定。ohire-プレフィックスは付けない
+    localStorage.setItem('note-analyzer-precheck', JSON.stringify({ v: 1, title, body, from: 'ohire', at: Date.now() }));
+  } catch (e) { showToast('受け渡しに失敗しました（ストレージ容量）'); return; }
+  window.open('https://kyunkyunpeachdisco-maker.github.io/note-analyzer/?precheck=1', '_blank', 'noopener');
+  showToast('📊 note-analyzerで公開前チェックを開きました');
+}
+
 // クリップボードコピー（クリップボードAPI不可の環境ではexecCommandにフォールバック）
 function copyText(text, toastMsg) {
   const done = () => showToast(toastMsg);
@@ -3264,6 +3279,7 @@ function showTutorial() {
           <li>提案された変更は<b>放置すれば反映</b>。嫌な箇所だけタップで却下</li>
           <li>本文の一部を<b>選択してから</b>チャットで指示すると、その部分だけをピンポイントで直せる</li>
           <li>できあがったら 📋 で本文をコピーして、noteに貼るだけ</li>
+          <li>公開前に ☰メニュー →「📊 note-analyzerで公開前チェック」で品質を確認できる</li>
         </ul>
       </div>
       <div class="tutorial-step"><b>3. データを残す・持ち運ぶ（おすすめ）</b>
