@@ -531,6 +531,8 @@
     #preview-view h3 { font-size: 17px; margin: 22px 0 10px; }
     #preview-view p { margin: 0 0 14px; }
     #preview-view .pv-title { font-size: 24px; margin: 0 0 24px; font-weight: 700; }
+    #preview-view .pv-img { display: block; max-width: 100%; border-radius: 10px; margin: 16px 0; }
+    #preview-view .pv-img-missing { color: #999; font-size: 13px; border: 1px dashed #ccc; border-radius: 8px; padding: 10px; }
 
     .bubble-img {
       max-width: 100%;
@@ -825,6 +827,8 @@
   <div class="header-actions">
     <button class="btn-sm" onclick="copyAll()" title="本文をコピー">📋</button>
     <button id="draft-gen" class="btn-sm" onclick="toggleDraftGen()" title="下書き自動生成">✍️</button>
+    <button class="btn-sm" onclick="document.getElementById('draft-image-input').click()" title="画像を挿入">🖼</button>
+    <input type="file" id="draft-image-input" accept="image/*" style="display:none" onchange="if(this.files[0])insertDraftImage(this.files[0]);this.value=''" />
     <button id="preview-btn" class="btn-sm" onclick="togglePreview()" title="プレビュー">👁</button>
 
     <!-- ハンバーガーメニュー -->
@@ -963,8 +967,12 @@
     <button class="dropdown-item" onclick="showRepoModal(); closeMenu()" id="repo-btn">☁️ 同期設定（リポジトリ）</button>
     <button class="dropdown-item" onclick="repoUpload(); closeMenu()">↑ リポジトリに保存</button>
     <button class="dropdown-item" onclick="repoDownload(); closeMenu()">↓ リポジトリから読み込み</button>
-    <div class="menu-label">夜間リライトモデル</div>
-    <select id="nightly-model-select" class="menu-select" onchange="saveNightlyModel()">
+    <div class="menu-label">🌙 夜間リライト</div>
+    <select id="nightly-enabled-select" class="menu-select" onchange="saveNightlySettings()">
+      <option value="on">実行する（毎日 JST 3:00）</option>
+      <option value="off">停止する</option>
+    </select>
+    <select id="nightly-model-select" class="menu-select" onchange="saveNightlySettings()">
       <option value="claude-opus-4-8">Opus（既定・高精度）</option>
       <option value="claude-fable-5">Fable（最上位）</option>
       <option value="claude-sonnet-5">Sonnet（安価）</option>
@@ -1144,6 +1152,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadChatMemo(currentDraftId);
   document.getElementById('style-memo').value = localStorage.getItem('ohire-style_memo') || '';
   document.getElementById('nightly-model-select').value = localStorage.getItem('ohire-nightly_model') || 'claude-opus-4-8';
+  document.getElementById('nightly-enabled-select').value = localStorage.getItem('ohire-nightly_enabled') || 'on';
   draftGenOn = !!localStorage.getItem('ohire-draft_gen');
   document.getElementById('draft-gen').classList.toggle('on', draftGenOn);
 
@@ -1750,15 +1759,27 @@ function removeTyping(id) {
 // ==================== Markdown preview ====================
 let previewOn = false;
 
-// H2/H3/太字のみの軽量レンダラ（ライターAIの許可記法と同じ範囲）
+// H2/H3/太字＋下書き画像（![alt](images/…)）の軽量レンダラ（ライターAIの許可記法と同じ範囲）
 function renderMarkdown(md) {
   const inline = s => esc(s).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   return md.split('\n').map(line => {
+    const img = line.trim().match(/^!\[([^\]]*)\]\(images\/([^)]+)\)$/);
+    if (img) return `<img class="pv-img" data-img="${esc(img[2])}" alt="${esc(img[1])}" title="${esc(img[1])}">`;
     if (/^###\s+/.test(line)) return `<h3>${inline(line.replace(/^###\s+/, ''))}</h3>`;
     if (/^##\s+/.test(line)) return `<h2>${inline(line.replace(/^##\s+/, ''))}</h2>`;
     if (!line.trim()) return '';
     return `<p>${inline(line)}</p>`;
   }).join('');
+}
+
+// プレビュー内の画像参照をIndexedDBの実体で解決する
+async function hydratePreviewImages(container) {
+  const imgs = container.querySelectorAll('img[data-img]');
+  for (const el of imgs) {
+    const dataUrl = await imgGet((currentDraftId || 'default') + '/' + el.dataset.img);
+    if (dataUrl) el.src = dataUrl;
+    else el.outerHTML = `<p class="pv-img-missing">🖼 ${esc(el.dataset.img)}（この端末に画像がありません。↓リポジトリから読み込みで取得できます）</p>`;
+  }
 }
 
 function togglePreview() {
@@ -1769,6 +1790,7 @@ function togglePreview() {
     const title = document.getElementById('title-input').value.trim();
     pv.innerHTML = (title ? `<div class="pv-title">${esc(title)}</div>` : '')
       + renderMarkdown(document.getElementById('editor').value);
+    hydratePreviewImages(pv);
     document.querySelector('.editor-scroll').style.display = 'none';
     pv.style.display = 'block';
   } else {
@@ -2572,11 +2594,13 @@ function newDraft() {
   document.getElementById('editor').focus();
 }
 
-function saveNightlyModel() {
-  const v = document.getElementById('nightly-model-select').value;
-  localStorage.setItem('ohire-nightly_model', v);
+function saveNightlySettings() {
+  const enabled = document.getElementById('nightly-enabled-select').value;
+  const model = document.getElementById('nightly-model-select').value;
+  localStorage.setItem('ohire-nightly_enabled', enabled);
+  localStorage.setItem('ohire-nightly_model', model);
   repoDirty = true; // 次回の↑保存でsettings.jsonに反映される
-  showToast('夜間リライトモデル: ' + v + '（↑リポジトリに保存で反映）');
+  showToast('🌙 夜間リライト: ' + (enabled === 'off' ? '停止' : '実行（' + model + '）') + '（↑リポジトリに保存で反映）');
 }
 
 function branchDraft() {
@@ -2676,6 +2700,114 @@ function openDrafts() {
   document.getElementById('drafts-panel').classList.add('open');
 }
 function closeDrafts() { document.getElementById('drafts-overlay').classList.remove('visible'); document.getElementById('drafts-panel').classList.remove('open'); }
+
+// ==================== 下書き画像（IndexedDB） ====================
+// 本文に ![alt](images/<name>) で参照し、実体はIndexedDBに保存（localStorageの5MB枠を使わない）。
+// ↑保存で drafts/<id>/images/ へ同期、↓読み込みで復元。画像は挿入後不変として扱う。
+let _imgDbPromise = null;
+function imgDb() {
+  if (!_imgDbPromise) _imgDbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open('ohire-images', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('images');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return _imgDbPromise;
+}
+function imgPut(key, dataUrl) {
+  return imgDb().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction('images', 'readwrite');
+    tx.objectStore('images').put(dataUrl, key);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  })).catch(() => false);
+}
+function imgGet(key) {
+  return imgDb().then(db => new Promise((resolve) => {
+    const req = db.transaction('images').objectStore('images').get(key);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => resolve(null);
+  })).catch(() => null);
+}
+function imgKeysByPrefix(prefix) {
+  return imgDb().then(db => new Promise((resolve) => {
+    const req = db.transaction('images').objectStore('images').getAllKeys();
+    req.onsuccess = () => resolve((req.result || []).filter(k => String(k).startsWith(prefix)));
+    req.onerror = () => resolve([]);
+  })).catch(() => []);
+}
+
+function insertAtEditorCursor(text) {
+  const ed = document.getElementById('editor');
+  const s = ed.selectionStart ?? ed.value.length;
+  ed.value = ed.value.slice(0, s) + text + ed.value.slice(ed.selectionEnd ?? s);
+  ed.selectionStart = ed.selectionEnd = s + text.length;
+  autoResize(ed);
+}
+
+async function insertDraftImage(file) {
+  if (!file || !file.type.startsWith('image/')) { showToast('画像ファイルを選択してください'); return; }
+  const ext = ({'image/png':'png','image/jpeg':'jpg','image/gif':'gif','image/webp':'webp'})[file.type] || 'png';
+  const name = `img-${Date.now()}.${ext}`;
+  const dataUrl = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+  insertAtEditorCursor(`\n![画像](images/${name})\n`);
+  autoSaveCurrentDraft(); // 下書きIDを確定させてから実体を保存
+  const ok = await imgPut((currentDraftId || 'default') + '/' + name, dataUrl);
+  if (!ok) { showToast('画像の保存に失敗しました'); return; }
+  repoDirty = true;
+  showToast('🖼 画像を挿入しました（↑保存でリポジトリにも同期）');
+  if (previewOn) { previewOn = false; togglePreview(); } // プレビュー中なら再描画
+}
+
+// エディタへの画像ペースト対応
+document.getElementById('editor').addEventListener('paste', e => {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const it of items) {
+    if (it.type.startsWith('image/')) { e.preventDefault(); insertDraftImage(it.getAsFile()); return; }
+  }
+});
+
+// ↑保存: 下書きの画像をリポジトリへ（画像は不変なので、リモートに無いものだけPUT）
+async function repoUploadImages(draftId) {
+  const keys = await imgKeysByPrefix(draftId + '/');
+  for (const key of keys) {
+    const name = String(key).slice(draftId.length + 1);
+    const path = `drafts/${draftId}/images/${name}`;
+    if (remoteSha[path]) continue;
+    const sha = await ghGetShaFromDir(path);
+    if (sha) { remoteSha[path] = sha; continue; }
+    const dataUrl = await imgGet(key);
+    if (!dataUrl) continue;
+    const res = await fetch(`https://api.github.com/repos/${dataRepo}/contents/${path}`, {
+      method: 'PUT', headers: ghHeaders(),
+      body: JSON.stringify({ message: `画像追加: ${name}`, content: String(dataUrl).split(',')[1] })
+    });
+    if (res.ok) { const j = await res.json(); remoteSha[path] = j.content.sha; }
+  }
+}
+
+// ↓読み込み: リポジトリの画像をこの端末に復元（無いものだけ取得）
+async function repoDownloadImages(draftId) {
+  const res = await fetch(`https://api.github.com/repos/${dataRepo}/contents/drafts/${draftId}/images`, { headers: ghHeaders() });
+  if (!res.ok) return; // 画像なし
+  const files = (await res.json()).filter(f => f.type === 'file');
+  for (const f of files) {
+    const key = draftId + '/' + f.name;
+    if (await imgGet(key)) continue;
+    const raw = await fetch(`https://api.github.com/repos/${dataRepo}/contents/drafts/${draftId}/images/${f.name}`,
+      { headers: { ...ghHeaders(), 'Accept': 'application/vnd.github.raw' } });
+    if (!raw.ok) continue;
+    const blob = await raw.blob();
+    const dataUrl = await new Promise(resolve => { const r = new FileReader(); r.onload = () => resolve(r.result); r.readAsDataURL(blob); });
+    await imgPut(key, dataUrl);
+  }
+}
 
 // ==================== GitHub同期 ====================
 // 同期先はユーザー自身のリポジトリ（プライベート可）。データ構成:
@@ -2830,12 +2962,14 @@ async function repoUpload(silent = false) {
     for (const d of getDrafts()) {
       await ghSyncFile(`drafts/${d.id}/article.md`, articleMd(d.title, d.body), `更新: ${d.title}`);
       await ghSyncFile(`drafts/${d.id}/data.json`, draftDataJson(d), `更新: ${d.title}（メタ・チャット）`);
+      await repoUploadImages(d.id);
     }
     const settings = JSON.stringify({
       version: 3,
       styleMemo: localStorage.getItem('ohire-style_memo') || '',
       tone: localStorage.getItem('ohire-tone') || '',
-      nightlyModel: localStorage.getItem('ohire-nightly_model') || 'claude-opus-4-8'
+      nightlyModel: localStorage.getItem('ohire-nightly_model') || 'claude-opus-4-8',
+      nightlyEnabled: (localStorage.getItem('ohire-nightly_enabled') || 'on') !== 'off'
     }, null, 2);
     await ghSyncFile('settings.json', settings, '更新: 設定');
     const guideCreated = await ensureRepoGuide();
@@ -2860,7 +2994,8 @@ async function ensureRepoGuide() {
       '```',
       'drafts/<id>/article.md   … 下書き本文（# タイトル + 本文）← リライト対象はここ',
       'drafts/<id>/data.json    … メタデータ（タイトル・本文・壁打ちログ・メモ）',
-      'settings.json            … 文体メモ・トーン設定',
+      'drafts/<id>/images/      … 本文が ![alt](images/…) で参照する画像（変更・削除しない）',
+      'settings.json            … 文体メモ・トーン設定・夜間リライト設定',
       '```',
       '',
       '## リライト・編集を頼まれたら',
@@ -2928,6 +3063,7 @@ async function repoDownload() {
         }
         if (art.title && art.title !== rd.title) base.title = art.title;
       }
+      await repoDownloadImages(rd.id); // 画像をこの端末に復元（無いものだけ）
       merged.push(base);
     }
 
