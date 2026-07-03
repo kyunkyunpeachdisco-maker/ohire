@@ -2796,9 +2796,46 @@ async function repoUpload(silent = false) {
       tone: localStorage.getItem('ohire-tone') || ''
     }, null, 2);
     await ghSyncFile('settings.json', settings, '更新: 設定');
+    const guideCreated = await ensureRepoGuide();
     repoDirty = false;
-    if (!silent) showToast('☁️ リポジトリに保存しました');
+    if (!silent) showToast('☁️ リポジトリに保存しました' + (guideCreated ? '（案内ファイル CLAUDE.md を作成）' : ''));
   } catch (e) { if (!silent) showToast('エラー: ' + e.message); }
+}
+
+// データリポジトリに案内ファイルを一度だけ置く（Claude Codeが構造とリライトルールを把握できるように）。
+// 既にCLAUDE.mdがあるリポジトリには絶対に書かない。失敗しても保存自体は成功扱い。
+async function ensureRepoGuide() {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${dataRepo}/contents/CLAUDE.md`, { headers: ghHeaders() });
+    if (res.status !== 404) return false; // 既存なら何もしない
+    const guide = [
+      '# ohire データリポジトリ',
+      '',
+      'note下書きアプリ **ohire** の成果物置き場。ohireアプリと夜間リライトActionsがここにコミットする。',
+      '',
+      '## 構造',
+      '',
+      '```',
+      'drafts/<id>/article.md   … 下書き本文（# タイトル + 本文）← リライト対象はここ',
+      'drafts/<id>/data.json    … メタデータ（タイトル・本文・壁打ちログ・メモ）',
+      'settings.json            … 文体メモ・トーン設定',
+      '```',
+      '',
+      '## リライト・編集を頼まれたら',
+      '',
+      '- 編集するのは `drafts/<id>/article.md` **のみ**。`data.json` は触らない（article.mdとdata.jsonの本文差分が「編集あり」のシグナルで、アプリがdiffレビュー表示する）',
+      '- 文体は `settings.json` の styleMemo / tone に従う',
+      '- 壁打ちの文脈は `drafts/<id>/data.json` の chatLog / chatMemo を参照する',
+      '',
+      'このファイルは ohire の初回保存時に自動作成されました。',
+      ''
+    ].join('\n');
+    const put = await fetch(`https://api.github.com/repos/${dataRepo}/contents/CLAUDE.md`, {
+      method: 'PUT', headers: ghHeaders(),
+      body: JSON.stringify({ message: 'ohire: データ構造とリライトルールの案内ファイルを追加', content: b64encode(guide) })
+    });
+    return put.ok;
+  } catch (e) { return false; }
 }
 
 async function repoDownload() {
@@ -2942,6 +2979,7 @@ function showRepoModal() {
         <button class="modal-copy-btn" onclick="copyModalField('modal-pat', 'PAT')" title="コピー">📋</button>
       </div>
       <p class="tutorial-note">おまけ：<a href="https://claude.ai/code" target="_blank" rel="noopener">claude.ai/code</a> でこのリポジトリを開くと、Claude Codeに下書き（drafts/…/article.md）を読ませてリライトを頼めます。編集されたら「↓ リポジトリから読み込み」で変更案がレビューとして表示されます。</p>
+      <p class="tutorial-note">※初回保存時、Claude Codeがデータ構造を把握できるよう、案内ファイル（CLAUDE.md）をリポジトリに自動作成します（既にある場合は何もしません）。</p>
       <button class="modal-btn" id="repo-modal-save">保存</button>
     </div>
   `;
