@@ -2707,12 +2707,38 @@ function b64decode(b64) {
 async function ghGetFile(path) {
   const res = await fetch(`https://api.github.com/repos/${dataRepo}/contents/${path}`, { headers: ghHeaders() });
   if (res.status === 404) { remoteSha[path] = null; remoteContent[path] = null; return null; }
-  if (!res.ok) throw new Error(`GitHub API: ${res.status}`);
+  if (!res.ok) {
+    // 約1MB超のファイルはcontents APIが本文を返せない（403）。
+    // shaは親ディレクトリ一覧から、本文はraw形式で取得するフォールバック
+    const [sha, rawRes] = await Promise.all([
+      ghGetShaFromDir(path),
+      fetch(`https://api.github.com/repos/${dataRepo}/contents/${path}`,
+        { headers: { ...ghHeaders(), 'Accept': 'application/vnd.github.raw' } })
+    ]);
+    if (sha && rawRes.ok) {
+      const content = await rawRes.text();
+      remoteSha[path] = sha; remoteContent[path] = content;
+      return { sha, content };
+    }
+    throw new Error(`GitHub API: ${res.status}`);
+  }
   const json = await res.json();
   const content = b64decode(json.content);
   remoteSha[path] = json.sha;
   remoteContent[path] = content;
   return { sha: json.sha, content };
+}
+
+// 親ディレクトリ一覧からshaを取得（ファイル本体を取らないためサイズ制限の影響を受けない）
+async function ghGetShaFromDir(path) {
+  try {
+    const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+    const res = await fetch(`https://api.github.com/repos/${dataRepo}/contents/${dir}`, { headers: ghHeaders() });
+    if (!res.ok) return null;
+    const list = await res.json();
+    const f = Array.isArray(list) ? list.find(x => x.path === path) : null;
+    return f ? f.sha : null;
+  } catch (e) { return null; }
 }
 
 // 内容に変更がある時だけPUT。sha競合（並行更新）は取り直して1回だけ上書き再試行
