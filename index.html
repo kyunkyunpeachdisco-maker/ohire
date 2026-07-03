@@ -2896,16 +2896,17 @@ function showRepoModal() {
       <p>下書きを自分のGitHubリポジトリ（非公開でOK・無料）に保存します。端末をまたいで同期でき、ブラウザのデータ消去にも備えられます。GitHubアカウントがあれば3分で終わります。</p>
       <div class="tutorial-step"><b>1. 保存先リポジトリを作る（初回のみ）</b>
         <ul>
-          <li><a href="https://github.com/new" target="_blank" rel="noopener">GitHubでリポジトリを作成</a>（名前は例: <b>ohire-data</b>）</li>
-          <li>「<b>Private</b>」を選び、「Add a README file」にチェックを入れて作成</li>
+          <li><a href="https://github.com/new?name=ohire-data&amp;visibility=private" target="_blank" rel="noopener">GitHubでリポジトリを作成</a>（名前<b>ohire-data</b>・非公開は入力済み。「Create repository」を押すだけ）</li>
+          <li>既存のリポジトリを使う場合はこの手順は不要</li>
         </ul>
       </div>
       <div class="tutorial-step"><b>2. アクセス用トークンを作る</b>
         <ul>
-          <li><a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Fine-grained tokenを発行</a></li>
-          <li>Repository access：「Only select repositories」で1で作ったリポジトリだけを選ぶ</li>
+          <li><a href="https://github.com/settings/personal-access-tokens/new?name=ohire" target="_blank" rel="noopener">Fine-grained tokenを発行</a>（Token nameは例: <b>ohire</b>。リンクから開けば入力済み）</li>
+          <li>Expiration：<b>90 days</b> または Custom で1年後（切れたら再発行してここに貼り直すだけ）</li>
+          <li>Repository access：「Only select repositories」で1のリポジトリ（または既存の保存先）だけを選ぶ</li>
           <li>Permissions：<b>Contents = Read and write</b> のみ</li>
-          <li>作成後に表示されるトークンをコピー</li>
+          <li>作成後に表示される <b>github_pat_…</b> をコピー（<b>この画面を閉じると二度と表示されません</b>）</li>
         </ul>
       </div>
       <div class="tutorial-step"><b>3. 下に入力して保存</b>
@@ -2915,7 +2916,7 @@ function showRepoModal() {
         </ul>
       </div>
       <div class="modal-input-row">
-        <input type="text" id="modal-repo" placeholder="ユーザー名/リポジトリ名" autocomplete="off" />
+        <input type="text" id="modal-repo" placeholder="例: yourname/ohire-data（URL貼り付けも可）" autocomplete="off" />
         <button class="modal-copy-btn" onclick="copyModalField('modal-repo', 'リポジトリ')" title="コピー">📋</button>
       </div>
       <div class="modal-input-row">
@@ -2942,7 +2943,8 @@ function copyModalField(id, label) {
 function saveRepoSettings() {
   githubPAT = document.getElementById('modal-pat')?.value.trim() ?? '';
   dataRepo  = (document.getElementById('modal-repo')?.value.trim() ?? '')
-    .replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/$/, '');
+    .replace(/^https?:\/\/(www\.)?github\.com\//, '').replace(/^github\.com\//, '')
+    .replace(/\.git$/, '').match(/^[\w.-]+\/[\w.-]+/)?.[0] ?? '';
   localStorage.setItem('note_github_pat', githubPAT);
   localStorage.setItem('note_data_repo', dataRepo);
   updateRepoBtn();
