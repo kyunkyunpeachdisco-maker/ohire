@@ -990,6 +990,24 @@
 <div id="toast"></div>
 
 <script>
+// ==================== localStorageキー移行（note_* → ohire-*、一度きり） ====================
+(function(){
+  try {
+    if (localStorage.getItem('ohire-key-migrated')) return;
+    const olds = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.indexOf('note_') === 0) olds.push(k);
+    }
+    olds.forEach(k => {
+      const nk = 'ohire-' + k.slice(5);
+      if (localStorage.getItem(nk) === null) localStorage.setItem(nk, localStorage.getItem(k));
+      localStorage.removeItem(k);
+    });
+    localStorage.setItem('ohire-key-migrated', '1');
+  } catch (e) { /* プライベートモード等では何もしない */ }
+})();
+
 // ==================== Providers ====================
 const PROVIDERS = {
   anthropic: {
@@ -1049,17 +1067,17 @@ const PROVIDERS = {
 
 // ==================== State ====================
 const apiKeys = {
-  anthropic: localStorage.getItem('note_apikey_anthropic') || '',
-  openai:    localStorage.getItem('note_apikey_openai') || '',
-  groq:      localStorage.getItem('note_apikey_groq') || '',
-  gemini:    localStorage.getItem('note_apikey_gemini') || '',
+  anthropic: localStorage.getItem('ohire-apikey_anthropic') || '',
+  openai:    localStorage.getItem('ohire-apikey_openai') || '',
+  groq:      localStorage.getItem('ohire-apikey_groq') || '',
+  gemini:    localStorage.getItem('ohire-apikey_gemini') || '',
 };
-let githubPAT = localStorage.getItem('note_github_pat') || '';
-let dataRepo  = localStorage.getItem('note_data_repo')  || ''; // 同期先リポジトリ「owner/repo」
+let githubPAT = localStorage.getItem('ohire-github_pat') || '';
+let dataRepo  = localStorage.getItem('ohire-data_repo')  || ''; // 同期先リポジトリ「owner/repo」
 let repoDirty = false; // 最後の☁️保存以降にローカル変更があるか
 let selStart = 0, selEnd = 0;
 let proposedText = '';
-let currentDraftId = localStorage.getItem('note_current_draft_id') || null;
+let currentDraftId = localStorage.getItem('ohire-current_draft_id') || null;
 let attachedImage = null; // { dataUrl, base64, mimeType }
 let draftGenOn = false;
 let pendingProposal = null; // 本文編集中に届いたライターAI提案の保留分（エディタblur時に表示）
@@ -1070,7 +1088,7 @@ let compacting = false;
 function toggleDraftGen() {
   draftGenOn = !draftGenOn;
   document.getElementById('draft-gen').classList.toggle('on', draftGenOn);
-  localStorage.setItem('note_draft_gen', draftGenOn ? '1' : '');
+  localStorage.setItem('ohire-draft_gen', draftGenOn ? '1' : '');
 }
 
 // チャット履歴（{role, text, time, mode}の配列。mode: 'chat'=会話 / 'edit'=編集 / 'system'=UI通知）
@@ -1079,19 +1097,19 @@ let chatLog = [];
 // ==================== Init ====================
 document.addEventListener('DOMContentLoaded', () => {
   // プロバイダー・モデルを復元
-  const savedProvider = localStorage.getItem('note_provider') || 'anthropic';
+  const savedProvider = localStorage.getItem('ohire-provider') || 'anthropic';
   document.getElementById('provider-select').value = savedProvider;
   switchProvider(false);
-  const savedModel = localStorage.getItem('note_model_' + savedProvider);
+  const savedModel = localStorage.getItem('ohire-model_' + savedProvider);
   if (savedModel) document.getElementById('model-select').value = savedModel;
 
   document.getElementById('model-select').addEventListener('change', e => {
     const provider = document.getElementById('provider-select').value;
-    localStorage.setItem('note_model_' + provider, e.target.value);
+    localStorage.setItem('ohire-model_' + provider, e.target.value);
   });
 
   // トーン設定を復元
-  const savedTone = localStorage.getItem('note_tone') || '';
+  const savedTone = localStorage.getItem('ohire-tone') || '';
   document.getElementById('tone-select').value = savedTone;
 
   updateApiKeyBtn();
@@ -1107,7 +1125,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // チャット履歴を復元
-  const savedLog = localStorage.getItem('note_chat_log_' + (currentDraftId || 'default'));
+  const savedLog = localStorage.getItem('ohire-chat_log_' + (currentDraftId || 'default'));
   if (savedLog) {
     try {
       chatLog = JSON.parse(savedLog);
@@ -1117,12 +1135,12 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   loadChatMemo(currentDraftId);
-  document.getElementById('style-memo').value = localStorage.getItem('note_style_memo') || '';
-  draftGenOn = !!localStorage.getItem('note_draft_gen');
+  document.getElementById('style-memo').value = localStorage.getItem('ohire-style_memo') || '';
+  draftGenOn = !!localStorage.getItem('ohire-draft_gen');
   document.getElementById('draft-gen').classList.toggle('on', draftGenOn);
 
   // 初回訪問者（キー未設定・下書きも会話もなし）にはチュートリアルを表示
-  if (!localStorage.getItem('note_tutorial_seen')
+  if (!localStorage.getItem('ohire-tutorial_seen')
       && !Object.values(apiKeys).some(Boolean)
       && getDrafts().length === 0 && chatLog.length === 0) {
     showTutorial();
@@ -1251,13 +1269,13 @@ function togglePane(pane) {
 function switchProvider(saveToStorage = true) {
   const provider = document.getElementById('provider-select').value;
   if (saveToStorage) {
-    localStorage.setItem('note_provider', provider);
+    localStorage.setItem('ohire-provider', provider);
   }
   const sel = document.getElementById('model-select');
   sel.innerHTML = PROVIDERS[provider].models
     .map(m => `<option value="${m.value}">${m.label}</option>`)
     .join('');
-  const savedModel = localStorage.getItem('note_model_' + provider);
+  const savedModel = localStorage.getItem('ohire-model_' + provider);
   if (savedModel) sel.value = savedModel;
   updateApiKeyBtn();
 }
@@ -1332,7 +1350,7 @@ function getSelectedModel() {
 
 function getDeepRewriteModel() {
   const provider = getSelectedProvider();
-  return localStorage.getItem('note_deep_model_' + provider) || getSelectedModel();
+  return localStorage.getItem('ohire-deep_model_' + provider) || getSelectedModel();
 }
 
 function showDeepRewriteModelModal() {
@@ -1356,7 +1374,7 @@ function showDeepRewriteModelModal() {
     document.body.appendChild(overlay);
     document.getElementById('deep-rewrite-start').addEventListener('click', () => {
       const model = document.getElementById('deep-rewrite-model-select').value;
-      localStorage.setItem('note_deep_model_' + provider, model);
+      localStorage.setItem('ohire-deep_model_' + provider, model);
       overlay.remove();
       resolve(model);
     });
@@ -1378,21 +1396,21 @@ ${body.slice(-1500)}`;
 }
 
 function saveStyleMemo() {
-  localStorage.setItem('note_style_memo', document.getElementById('style-memo').value);
+  localStorage.setItem('ohire-style_memo', document.getElementById('style-memo').value);
 }
 
 function getStyleMemo() {
-  return (localStorage.getItem('note_style_memo') || '').trim();
+  return (localStorage.getItem('ohire-style_memo') || '').trim();
 }
 
 function saveChatMemo() {
-  safeSetItem('note_chat_memo_' + (currentDraftId || 'default'), JSON.stringify(chatMemo));
+  safeSetItem('ohire-chat_memo_' + (currentDraftId || 'default'), JSON.stringify(chatMemo));
 }
 
 function loadChatMemo(id) {
   chatMemo = { text: '', upTo: 0 };
   try {
-    const raw = localStorage.getItem('note_chat_memo_' + (id || 'default'));
+    const raw = localStorage.getItem('ohire-chat_memo_' + (id || 'default'));
     if (raw) {
       const p = JSON.parse(raw);
       if (p && typeof p.text === 'string') chatMemo = { text: p.text, upTo: p.upTo || 0 };
@@ -1443,7 +1461,7 @@ ${lines}`;
 }
 
 function saveChatLog() {
-  const key = 'note_chat_log_' + (currentDraftId || 'default');
+  const key = 'ohire-chat_log_' + (currentDraftId || 'default');
   safeSetItem(key, JSON.stringify(chatLog));
   repoDirty = true;
 }
@@ -1914,7 +1932,7 @@ function getSnapState(key) {
 
 function pushSnapshot() {
   const body = document.getElementById('editor').value;
-  const key = 'note_snapshots_' + (currentDraftId || 'default');
+  const key = 'ohire-snapshots_' + (currentDraftId || 'default');
   let state = getSnapState(key) || { snaps: [], cursor: 0 };
   // cursor が末尾以外（undo後）なら、その先の履歴を捨てて分岐
   state.snaps = state.snaps.slice(0, state.cursor);
@@ -1926,7 +1944,7 @@ function pushSnapshot() {
 
 function restoreSnapshot() {
   if (previewOn) togglePreview();
-  const key = 'note_snapshots_' + (currentDraftId || 'default');
+  const key = 'ohire-snapshots_' + (currentDraftId || 'default');
   let state = getSnapState(key) || { snaps: [], cursor: 0 };
   if (state.cursor <= 0 || state.snaps.length === 0) { showToast('戻せる履歴がありません'); return; }
   // 現在の本文を「進む先」として保持するため、cursor が末尾なら現在値を末尾に追加
@@ -1943,7 +1961,7 @@ function restoreSnapshot() {
 
 function forwardSnapshot() {
   if (previewOn) togglePreview();
-  const key = 'note_snapshots_' + (currentDraftId || 'default');
+  const key = 'ohire-snapshots_' + (currentDraftId || 'default');
   let state = getSnapState(key) || { snaps: [], cursor: 0 };
   if (state.cursor >= state.snaps.length - 1) { showToast('進める履歴がありません'); return; }
   state.cursor += 1;
@@ -2362,12 +2380,12 @@ function safeSetItem(key, value) {
 
 // ==================== Draft storage ====================
 function getDrafts() {
-  try { return JSON.parse(localStorage.getItem('note_drafts') || '[]'); }
+  try { return JSON.parse(localStorage.getItem('ohire-drafts') || '[]'); }
   catch { return []; }
 }
 
 function saveDraftsToStorage(drafts) {
-  safeSetItem('note_drafts', JSON.stringify(drafts));
+  safeSetItem('ohire-drafts', JSON.stringify(drafts));
   renderDraftsList();
   repoDirty = true;
 }
@@ -2398,7 +2416,7 @@ function autoSaveCurrentDraft() {
 
   const nd = { id: 'draft_' + now, title: title || '（無題）', body, created: now, updated: now };
   currentDraftId = nd.id;
-  localStorage.setItem('note_current_draft_id', currentDraftId);
+  localStorage.setItem('ohire-current_draft_id', currentDraftId);
   drafts.unshift(nd);
   saveDraftsToStorage(drafts);
 }
@@ -2422,7 +2440,7 @@ function closeMenu() {
 }
 
 function saveToneSetting() {
-  localStorage.setItem('note_tone', document.getElementById('tone-select').value);
+  localStorage.setItem('ohire-tone', document.getElementById('tone-select').value);
 }
 
 function getToneInstruction() {
@@ -2465,7 +2483,7 @@ function loadDraft(id) {
   saveChatLog(); // 切り替え前の履歴を保存
   saveChatMemo();
   currentDraftId = id;
-  localStorage.setItem('note_current_draft_id', id);
+  localStorage.setItem('ohire-current_draft_id', id);
   document.getElementById('title-input').value = draft.title === '（無題）' ? '' : draft.title;
   document.getElementById('editor').value = draft.body;
   autoResize(document.getElementById('title-input'));
@@ -2473,7 +2491,7 @@ function loadDraft(id) {
   setIndicator('保存済み');
   // チャット履歴をこの下書き用に切り替え
   clearChatUI();
-  const savedLog = localStorage.getItem('note_chat_log_' + id);
+  const savedLog = localStorage.getItem('ohire-chat_log_' + id);
   if (savedLog) {
     try {
       chatLog = JSON.parse(savedLog);
@@ -2493,12 +2511,12 @@ function deleteDraft(id, e) {
   const drafts = getDrafts().filter(d => d.id !== id);
   saveDraftsToStorage(drafts);
   deleteDraftRemote(id);
-  localStorage.removeItem('note_chat_log_' + id);
-  localStorage.removeItem('note_chat_memo_' + id);
-  localStorage.removeItem('note_snapshots_' + id);
+  localStorage.removeItem('ohire-chat_log_' + id);
+  localStorage.removeItem('ohire-chat_memo_' + id);
+  localStorage.removeItem('ohire-snapshots_' + id);
   if (currentDraftId === id) {
     currentDraftId = null;
-    localStorage.removeItem('note_current_draft_id');
+    localStorage.removeItem('ohire-current_draft_id');
     document.getElementById('title-input').value = '';
     document.getElementById('editor').value = '';
     autoResize(document.getElementById('title-input'));
@@ -2510,8 +2528,8 @@ function deleteDraft(id, e) {
 
 function clearChat() {
   if (!confirm('チャット履歴を削除しますか？')) return;
-  localStorage.removeItem('note_chat_log_' + (currentDraftId || 'default'));
-  localStorage.removeItem('note_chat_memo_' + (currentDraftId || 'default'));
+  localStorage.removeItem('ohire-chat_log_' + (currentDraftId || 'default'));
+  localStorage.removeItem('ohire-chat_memo_' + (currentDraftId || 'default'));
   chatMemo = { text: '', upTo: 0 };
   clearChatUI();
   showToast('チャット履歴を削除しました');
@@ -2534,7 +2552,7 @@ function clearChatUI() {
 
 function newDraft() {
   currentDraftId = null;
-  localStorage.removeItem('note_current_draft_id');
+  localStorage.removeItem('ohire-current_draft_id');
   document.getElementById('title-input').value = '';
   document.getElementById('editor').value = '';
   autoResize(document.getElementById('title-input'));
@@ -2549,7 +2567,7 @@ function newDraft() {
 function branchDraft() {
   // チャット履歴を引き継いで新規下書きを作成（chatLogは変えない）
   currentDraftId = null;
-  localStorage.removeItem('note_current_draft_id');
+  localStorage.removeItem('ohire-current_draft_id');
   document.getElementById('title-input').value = '';
   document.getElementById('editor').value = '';
   autoResize(document.getElementById('title-input'));
@@ -2752,8 +2770,8 @@ function parseArticleMd(text) {
 
 function draftDataJson(d) {
   let log = [], memo = null;
-  try { log = JSON.parse(localStorage.getItem('note_chat_log_' + d.id) || '[]'); } catch {}
-  try { memo = JSON.parse(localStorage.getItem('note_chat_memo_' + d.id) || 'null'); } catch {}
+  try { log = JSON.parse(localStorage.getItem('ohire-chat_log_' + d.id) || '[]'); } catch {}
+  try { memo = JSON.parse(localStorage.getItem('ohire-chat_memo_' + d.id) || 'null'); } catch {}
   return JSON.stringify({
     id: d.id, title: d.title, body: d.body,
     created: d.created, updated: d.updated,
@@ -2774,8 +2792,8 @@ async function repoUpload(silent = false) {
     }
     const settings = JSON.stringify({
       version: 3,
-      styleMemo: localStorage.getItem('note_style_memo') || '',
-      tone: localStorage.getItem('note_tone') || ''
+      styleMemo: localStorage.getItem('ohire-style_memo') || '',
+      tone: localStorage.getItem('ohire-tone') || ''
     }, null, 2);
     await ghSyncFile('settings.json', settings, '更新: 設定');
     repoDirty = false;
@@ -2813,13 +2831,13 @@ async function repoDownload() {
 
       // チャットログ: メッセージ件数が多い方（＝進んでいる方）を採用
       let localLen = 0;
-      try { localLen = (JSON.parse(localStorage.getItem('note_chat_log_' + rd.id) || '[]') || []).length; } catch {}
-      if ((rd.chatLog || []).length >= localLen) safeSetItem('note_chat_log_' + rd.id, JSON.stringify(rd.chatLog || []));
+      try { localLen = (JSON.parse(localStorage.getItem('ohire-chat_log_' + rd.id) || '[]') || []).length; } catch {}
+      if ((rd.chatLog || []).length >= localLen) safeSetItem('ohire-chat_log_' + rd.id, JSON.stringify(rd.chatLog || []));
 
       // 議論メモ: 畳み込み済み件数（upTo）が進んでいる方を採用
       let localUpTo = -1;
-      try { localUpTo = (JSON.parse(localStorage.getItem('note_chat_memo_' + rd.id) || 'null') || {}).upTo ?? -1; } catch {}
-      if (rd.chatMemo && (rd.chatMemo.upTo ?? 0) >= localUpTo) safeSetItem('note_chat_memo_' + rd.id, JSON.stringify(rd.chatMemo));
+      try { localUpTo = (JSON.parse(localStorage.getItem('ohire-chat_memo_' + rd.id) || 'null') || {}).upTo ?? -1; } catch {}
+      if (rd.chatMemo && (rd.chatMemo.upTo ?? 0) >= localUpTo) safeSetItem('ohire-chat_memo_' + rd.id, JSON.stringify(rd.chatMemo));
 
       // article.md の本文が data.json と食い違う＝外部（Claude Code・夜間リライト等）で編集された
       // → 夜間リライト案と同じdiffレビューとして取り込む（要約は最新コミットメッセージ）
@@ -2844,11 +2862,11 @@ async function repoDownload() {
       try {
         const s = JSON.parse(settingsFile.content);
         if (typeof s.styleMemo === 'string' && s.styleMemo) {
-          localStorage.setItem('note_style_memo', s.styleMemo);
+          localStorage.setItem('ohire-style_memo', s.styleMemo);
           document.getElementById('style-memo').value = s.styleMemo;
         }
         if (typeof s.tone === 'string' && s.tone) {
-          localStorage.setItem('note_tone', s.tone);
+          localStorage.setItem('ohire-tone', s.tone);
           document.getElementById('tone-select').value = s.tone;
         }
       } catch {}
@@ -2864,7 +2882,7 @@ async function repoDownload() {
       pendingProposal = null;
       setIndicator('保存済み');
       clearChatUI();
-      const savedLog = localStorage.getItem('note_chat_log_' + currentDraftId);
+      const savedLog = localStorage.getItem('ohire-chat_log_' + currentDraftId);
       if (savedLog) {
         try {
           chatLog = JSON.parse(savedLog);
@@ -2945,8 +2963,8 @@ function saveRepoSettings() {
   dataRepo  = (document.getElementById('modal-repo')?.value.trim() ?? '')
     .replace(/^https?:\/\/(www\.)?github\.com\//, '').replace(/^github\.com\//, '')
     .replace(/\.git$/, '').match(/^[\w.-]+\/[\w.-]+/)?.[0] ?? '';
-  localStorage.setItem('note_github_pat', githubPAT);
-  localStorage.setItem('note_data_repo', dataRepo);
+  localStorage.setItem('ohire-github_pat', githubPAT);
+  localStorage.setItem('ohire-data_repo', dataRepo);
   updateRepoBtn();
   document.querySelector('.modal-overlay')?.remove();
   showToast('GitHub同期設定を保存しました');
@@ -2988,7 +3006,7 @@ function saveApiKey() {
   if (!val) return;
   const provider = getSelectedProvider();
   apiKeys[provider] = val;
-  localStorage.setItem('note_apikey_' + provider, val);
+  localStorage.setItem('ohire-apikey_' + provider, val);
   updateApiKeyBtn();
   document.querySelector('.modal-overlay')?.remove();
   showToast('APIキーを保存しました');
@@ -3041,7 +3059,7 @@ function showTutorial() {
       <button class="modal-btn" id="tutorial-close">はじめる</button>
     </div>
   `;
-  const close = () => { localStorage.setItem('note_tutorial_seen', '1'); overlay.remove(); };
+  const close = () => { localStorage.setItem('ohire-tutorial_seen', '1'); overlay.remove(); };
   overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
   document.body.appendChild(overlay);
   document.getElementById('tutorial-close').addEventListener('click', close);
