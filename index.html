@@ -963,6 +963,13 @@
     <button class="dropdown-item" onclick="showRepoModal(); closeMenu()" id="repo-btn">☁️ 同期設定（リポジトリ）</button>
     <button class="dropdown-item" onclick="repoUpload(); closeMenu()">↑ リポジトリに保存</button>
     <button class="dropdown-item" onclick="repoDownload(); closeMenu()">↓ リポジトリから読み込み</button>
+    <div class="menu-label">夜間リライトモデル</div>
+    <select id="nightly-model-select" class="menu-select" onchange="saveNightlyModel()">
+      <option value="claude-opus-4-8">Opus（既定・高精度）</option>
+      <option value="claude-fable-5">Fable（最上位）</option>
+      <option value="claude-sonnet-5">Sonnet（安価）</option>
+      <option value="claude-haiku-4-5">Haiku（最安）</option>
+    </select>
     <hr class="menu-divider">
     <button class="dropdown-item" onclick="showTutorial(); closeMenu()">❓ 使い方</button>
     <button class="dropdown-item danger" onclick="clearChat(); closeMenu()">🗑 チャット履歴を削除</button>
@@ -1017,7 +1024,7 @@ const PROVIDERS = {
     keyNote: '従量課金（無料枠なし）',
     models: [
       { value: 'claude-haiku-4-5',  label: 'Haiku（速・安）' },
-      { value: 'claude-sonnet-4-6', label: 'Sonnet（標準）' },
+      { value: 'claude-sonnet-5',   label: 'Sonnet（標準）' },
       { value: 'claude-opus-4-8',   label: 'Opus（高精度）' },
       { value: 'claude-fable-5',    label: 'Fable（最上位）' },
     ]
@@ -1136,6 +1143,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   loadChatMemo(currentDraftId);
   document.getElementById('style-memo').value = localStorage.getItem('ohire-style_memo') || '';
+  document.getElementById('nightly-model-select').value = localStorage.getItem('ohire-nightly_model') || 'claude-opus-4-8';
   draftGenOn = !!localStorage.getItem('ohire-draft_gen');
   document.getElementById('draft-gen').classList.toggle('on', draftGenOn);
 
@@ -2564,6 +2572,13 @@ function newDraft() {
   document.getElementById('editor').focus();
 }
 
+function saveNightlyModel() {
+  const v = document.getElementById('nightly-model-select').value;
+  localStorage.setItem('ohire-nightly_model', v);
+  repoDirty = true; // 次回の↑保存でsettings.jsonに反映される
+  showToast('夜間リライトモデル: ' + v + '（↑リポジトリに保存で反映）');
+}
+
 function branchDraft() {
   // チャット履歴を引き継いで新規下書きを作成（chatLogは変えない）
   currentDraftId = null;
@@ -2819,7 +2834,8 @@ async function repoUpload(silent = false) {
     const settings = JSON.stringify({
       version: 3,
       styleMemo: localStorage.getItem('ohire-style_memo') || '',
-      tone: localStorage.getItem('ohire-tone') || ''
+      tone: localStorage.getItem('ohire-tone') || '',
+      nightlyModel: localStorage.getItem('ohire-nightly_model') || 'claude-opus-4-8'
     }, null, 2);
     await ghSyncFile('settings.json', settings, '更新: 設定');
     const guideCreated = await ensureRepoGuide();
